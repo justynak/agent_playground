@@ -33,6 +33,22 @@ RSS_FEEDS = [
     {"name": "VentureBeat AI", "url": "https://venturebeat.com/category/ai/feed/"},
 ]
 
+ALLOWED_DOMAINS = {
+    "euractiv.com",
+    "europarl.europa.eu",
+    "politico.eu",
+    "reuters.com",
+    "techcrunch.com",
+    "theverge.com",
+    "wired.com",
+    "bbc.co.uk",
+    "bbc.com",
+    "venturebeat.com",
+    "ec.europa.eu",
+    "consilium.europa.eu",
+    "eur-lex.europa.eu",
+}
+
 AI_ACT_KEYWORDS = [
     "eu ai act", "ai act", "artificial intelligence act",
     "ai regulation", "eu ai regulation", "general purpose ai",
@@ -91,6 +107,11 @@ def fetch_rss_articles(feed_name: str, feed_url: str, days_back: int = 1) -> dic
 
 
 def fetch_article_content(url: str) -> dict[str, Any]:
+    from urllib.parse import urlparse
+    domain = urlparse(url).netloc.removeprefix("www.")
+    if not any(domain == d or domain.endswith("." + d) for d in ALLOWED_DOMAINS):
+        return {"error": f"Domain not in allowlist: {domain}", "url": url}
+
     try:
         resp = requests.get(
             url,

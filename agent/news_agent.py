@@ -294,6 +294,24 @@ def create_github_issue(title: str, body: str) -> str:
     raise RuntimeError(f"Failed to create issue: {resp.status_code} {resp.text}")
 
 
+NO_NEWS_MARKERS = [
+    "no relevant", "no significant", "no eu ai act news",
+    "nothing to report", "no news found", "no articles found",
+]
+
+
+def prescan_feeds() -> int:
+    """Scan all RSS feeds without calling the LLM. Returns total relevant article count."""
+    total = 0
+    for feed in RSS_FEEDS:
+        result = fetch_rss_articles(feed["name"], feed["url"], days_back=1)
+        count = len(result.get("relevant_articles", []))
+        if count:
+            print(f"  [prescan] {feed['name']}: {count} relevant article(s)", file=sys.stderr)
+        total += count
+    return total
+
+
 def main():
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     print(f"Starting EU AI Act news agent for {today}", file=sys.stderr)
@@ -302,7 +320,17 @@ def main():
         print(f"Digest for {today} already exists — skipping.", file=sys.stderr)
         sys.exit(0)
 
+    relevant_count = prescan_feeds()
+    if relevant_count == 0:
+        print(f"No relevant EU AI Act articles found for {today} — skipping issue.", file=sys.stderr)
+        sys.exit(0)
+
+    print(f"Found {relevant_count} relevant article(s) — running agent.", file=sys.stderr)
     summary = run_agent(today)
+
+    if any(marker in summary.lower() for marker in NO_NEWS_MARKERS):
+        print(f"Agent found no significant news for {today} — skipping issue.", file=sys.stderr)
+        sys.exit(0)
 
     issue_title = f"EU AI Act News Digest — {today}"
     issue_body = (

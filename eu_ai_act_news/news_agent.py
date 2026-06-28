@@ -57,6 +57,17 @@ AI_ACT_KEYWORDS = [
 ]
 
 
+def _is_relevant(title: str, summary: str) -> bool:
+    text = f"{title} {summary}".lower()
+    return any(kw in text for kw in AI_ACT_KEYWORDS)
+
+
+def _is_allowed_domain(url: str) -> bool:
+    from urllib.parse import urlparse
+    domain = urlparse(url).netloc.removeprefix("www.")
+    return any(domain == d or domain.endswith("." + d) for d in ALLOWED_DOMAINS)
+
+
 def fetch_rss_articles(feed_name: str, feed_url: str, days_back: int = 1) -> dict[str, Any]:
     try:
         cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
@@ -84,8 +95,7 @@ def fetch_rss_articles(feed_name: str, feed_url: str, days_back: int = 1) -> dic
             summary = getattr(entry, "summary", "")
             link = getattr(entry, "link", "")
 
-            text_to_check = f"{title} {summary}".lower()
-            is_relevant = any(kw in text_to_check for kw in AI_ACT_KEYWORDS)
+            is_relevant = _is_relevant(title, summary)
 
             articles.append({
                 "title": title,
@@ -107,9 +117,9 @@ def fetch_rss_articles(feed_name: str, feed_url: str, days_back: int = 1) -> dic
 
 
 def fetch_article_content(url: str) -> dict[str, Any]:
-    from urllib.parse import urlparse
-    domain = urlparse(url).netloc.removeprefix("www.")
-    if not any(domain == d or domain.endswith("." + d) for d in ALLOWED_DOMAINS):
+    if not _is_allowed_domain(url):
+        from urllib.parse import urlparse
+        domain = urlparse(url).netloc.removeprefix("www.")
         return {"error": f"Domain not in allowlist: {domain}", "url": url}
 
     try:

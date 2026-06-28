@@ -10,7 +10,10 @@ from typing import Any
 import feedparser
 import requests
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 from openai import OpenAI
+
+load_dotenv()
 
 DEEPSEEK_API_KEY = os.environ["DEEPSEEK_API_KEY"]
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]

@@ -4,7 +4,7 @@ import sys
 
 from openai import OpenAI
 
-from tools import validate_expression, parse_expression
+from tools import prefilter_syntax, parse_expression
 
 client = OpenAI(
     api_key=os.environ["DEEPSEEK_API_KEY"],
@@ -15,8 +15,8 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "validate_expression",
-            "description": "Validates a mathematical expression for allowed characters and balanced parentheses.",
+            "name": "prefilter_syntax",
+            "description": "Pre-filters a mathematical expression for allowed characters and balanced parentheses. Does not guarantee structural validity — call parse_expression afterwards to confirm.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -45,7 +45,7 @@ TOOLS = [
 SYSTEM_PROMPT = """You are a math expression orchestrator.
 
 When given an expression:
-1. Call validate_expression first. Pass the expression EXACTLY as received — do not correct, modify, or complete it in any way.
+1. Call prefilter_syntax first. Pass the expression EXACTLY as received — do not correct, modify, or complete it in any way.
 2. If invalid, report the error and stop.
 3. If valid, call parse_expression to get the operation tree.
 4. Show the operation tree to the user.
@@ -54,8 +54,8 @@ Do not compute the result yourself. Your job is validation and parsing only."""
 
 
 def dispatch_tool(name: str, args: dict) -> dict:
-    if name == "validate_expression":
-        return validate_expression(args["expression"])
+    if name == "prefilter_syntax":
+        return prefilter_syntax(args["expression"])
     elif name == "parse_expression":
         return parse_expression(args["expression"])
     return {"error": f"Unknown tool: {name}"}

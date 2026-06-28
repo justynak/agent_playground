@@ -2,7 +2,7 @@ import ast
 import re
 
 
-def validate_expression(expression: str) -> dict:
+def prefilter_syntax(expression: str) -> dict:
     if not expression.strip():
         return {"valid": False, "reason": "Expression is empty"}
 

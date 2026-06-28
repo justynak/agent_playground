@@ -22,14 +22,14 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: agent/requirements.txt
+          cache-dependency-path: eu_ai_act_news/requirements.txt
 
       - name: Install dependencies
-        run: pip install -r agent/requirements.txt
+        run: pip install -r eu_ai_act_news/requirements.txt
 
-      - name: Run news agent
+      - name: Run news eu_ai_act_news
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python agent/news_agent.py
+        run: python eu_ai_act_news/news_eu_ai_act_news.py

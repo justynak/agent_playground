@@ -53,7 +53,16 @@ When given an expression:
 Do not compute the result yourself. Your job is validation and parsing only."""
 
 
-def dispatch_tool(name: str, args: dict) -> dict:
+def dispatch_tool(name: str, args: dict, original_expression: str) -> dict:
+    if name in ("prefilter_syntax", "parse_expression"):
+        if args["expression"] != original_expression:
+            return {
+                "error": (
+                    f"Expression was modified before {name}. "
+                    f"Received: {args['expression']!r}, expected: {original_expression!r}. "
+                    "Pass the expression exactly as the user provided it."
+                )
+            }
     if name == "prefilter_syntax":
         return prefilter_syntax(args["expression"])
     elif name == "parse_expression":
@@ -84,7 +93,7 @@ def run(expression: str) -> str:
         for tc in msg.tool_calls:
             args = json.loads(tc.function.arguments)
             print(f"  [tool call] {tc.function.name}({json.dumps(args)})", file=sys.stderr)
-            result = dispatch_tool(tc.function.name, args)
+            result = dispatch_tool(tc.function.name, args, expression)
             print(f"  [tool result] {json.dumps(result)}", file=sys.stderr)
             messages.append({
                 "role": "tool",

@@ -12,24 +12,21 @@ jobs:
   news-digest:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: eu_ai_act_news
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: eu_ai_act_news/requirements.txt
+      - uses: astral-sh/setup-uv@v5
 
       - name: Install dependencies
-        run: pip install -r eu_ai_act_news/requirements.txt
+        run: uv sync
 
-      - name: Run news eu_ai_act_news
+      - name: Run news agent
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python eu_ai_act_news/news_eu_ai_act_news.py
+        run: uv run python news_agent.py

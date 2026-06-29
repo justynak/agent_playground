@@ -51,7 +51,10 @@ def _node_to_dict(node):
     elif isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
         return node.value
     elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-        return -_node_to_dict(node.operand)
+        operand = _node_to_dict(node.operand)
+        if isinstance(operand, (int, float)):
+            return -operand
+        return {"operation": "subtract", "left": 0, "right": operand}
     else:
         raise ValueError(f"Unsupported expression element: {type(node).__name__}")
 

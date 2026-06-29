@@ -52,7 +52,8 @@ def run(id: str, operation: str, left: float, right: float) -> dict:
         messages.append(msg)
 
         if not msg.tool_calls:
-            return {"error": f"Sub-agent did not call evaluate_operation for {id}"}
+            messages.append({"role": "user", "content": "Please call evaluate_operation with the provided inputs."})
+            continue
 
         tc = msg.tool_calls[0]
         args = json.loads(tc.function.arguments)

@@ -10,12 +10,11 @@ Takes an arithmetic expression like `(2+3)*4` and produces the correct numeric r
 
 ```bash
 cp .env.example .env        # add your DEEPSEEK_API_KEY
-pip install -r requirements.txt
-python main.py "(2+3)*4"
-python main.py "100/4+7*3"
+uv run main.py "(2+3)*4"
+uv run main.py "100/4+7*3"
 ```
 
-Output goes to stdout; tool call traces go to stderr.
+`uv` resolves and installs dependencies automatically on first run. Output goes to stdout; tool call traces go to stderr.
 
 ## Architecture
 
@@ -27,6 +26,49 @@ main.py
         ├── executable_operations  — returns the next wave of operations whose inputs are resolved
         └── spawn_evaluator_agent  ──► sub_agent.run(id, op, left, right)
                                            └── evaluate_operation  — does the arithmetic
+```
+
+### Evaluation flow
+
+Expression: `(2+3) * (8-6)`
+
+```
+orchestrator
+│
+├─ prefilter_syntax("(2+3) * (8-6)")      ✓ valid
+├─ parse_expression("(2+3) * (8-6)")      → operation tree
+│
+├─ executable_operations(tree, {})
+│   └─ returns wave 1: both sub-expressions are ready in parallel
+│
+│   ┌──────────────────────┬──────────────────────┐
+│   │                      │                      │
+│   ▼                      ▼                      │
+│   spawn_evaluator_agent  spawn_evaluator_agent  │  wave 1
+│   (root.left, add, 2, 3) (root.right, sub, 8, 6)│
+│   │                      │                      │
+│   ▼                      ▼                      │
+│   sub-agent              sub-agent              │
+│   evaluate_operation     evaluate_operation     │
+│   → {id: root.left,      → {id: root.right,     │
+│      result: 5}             result: 2}           │
+│                                                  │
+├─ executable_operations(tree, {root.left:5, root.right:2})
+│   └─ returns wave 2: root multiply is now ready
+│
+│   ▼
+│   spawn_evaluator_agent                            wave 2
+│   (root, multiply, 5, 2)
+│   │
+│   ▼
+│   sub-agent
+│   evaluate_operation
+│   → {id: root, result: 10}
+│
+├─ executable_operations(tree, {root.left:5, root.right:2, root:10})
+│   └─ returns [] — done
+│
+└─ reports: 10
 ```
 
 ### Orchestrator

@@ -54,3 +54,35 @@ def _node_to_dict(node):
         return -_node_to_dict(node.operand)
     else:
         raise ValueError(f"Unsupported expression element: {type(node).__name__}")
+
+
+def executable_operations(tree: dict | int | float, completed: dict) -> list:
+    result = []
+    _collect_executable(tree, "root", completed, result)
+    return result
+
+
+def _collect_executable(node, node_id: str, completed: dict, result: list) -> None:
+    if not isinstance(node, dict):
+        return
+    if node_id in completed:
+        return
+
+    left, right = node["left"], node["right"]
+    left_id, right_id = f"{node_id}.left", f"{node_id}.right"
+
+    left_resolved = not isinstance(left, dict) or left_id in completed
+    right_resolved = not isinstance(right, dict) or right_id in completed
+
+    if left_resolved and right_resolved:
+        result.append({
+            "id": node_id,
+            "operation": node["operation"],
+            "left": completed[left_id] if isinstance(left, dict) else left,
+            "right": completed[right_id] if isinstance(right, dict) else right,
+        })
+    else:
+        if not left_resolved:
+            _collect_executable(left, left_id, completed, result)
+        if not right_resolved:
+            _collect_executable(right, right_id, completed, result)

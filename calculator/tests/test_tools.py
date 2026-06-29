@@ -4,7 +4,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
-from tools import prefilter_syntax, parse_expression
+from tools import prefilter_syntax, parse_expression, executable_operations
 
 
 @pytest.mark.parametrize(
@@ -88,3 +88,97 @@ def test_parse_expression_failure(expression):
     result = parse_expression(expression)
     assert result["success"] is False
     assert "error" in result
+
+
+# Trees used across get_ready_operations tests
+_TREE_SIMPLE = {"operation": "add", "left": 2, "right": 3}
+
+_TREE_ONE_DEEP = {
+    "operation": "multiply",
+    "left": {"operation": "add", "left": 2, "right": 3},
+    "right": 4,
+}
+
+# (2+1)*3 + (3-1)*2
+_TREE_TWO_BRANCHES = {
+    "operation": "add",
+    "left": {
+        "operation": "multiply",
+        "left": {"operation": "add", "left": 2, "right": 1},
+        "right": 3,
+    },
+    "right": {
+        "operation": "multiply",
+        "left": {"operation": "subtract", "left": 3, "right": 1},
+        "right": 2,
+    },
+}
+
+
+@pytest.mark.parametrize(
+    "tree,completed,expected_ready",
+    [
+        # Leaf number — no operations to run
+        (
+            5,
+            {},
+            [],
+        ),
+        # Both children are numbers — root is immediately ready
+        (
+            _TREE_SIMPLE,
+            {},
+            [{"id": "root", "operation": "add", "left": 2, "right": 3}],
+        ),
+        # Already completed — nothing left
+        (
+            _TREE_SIMPLE,
+            {"root": 5},
+            [],
+        ),
+        # One level deep: inner add is ready, outer multiply is not
+        (
+            _TREE_ONE_DEEP,
+            {},
+            [{"id": "root.left", "operation": "add", "left": 2, "right": 3}],
+        ),
+        # Inner add completed — outer multiply is now ready
+        (
+            _TREE_ONE_DEEP,
+            {"root.left": 5},
+            [{"id": "root", "operation": "multiply", "left": 5, "right": 4}],
+        ),
+        # Two branches: both innermost adds are ready in parallel
+        (
+            _TREE_TWO_BRANCHES,
+            {},
+            [
+                {"id": "root.left.left", "operation": "add", "left": 2, "right": 1},
+                {"id": "root.right.left", "operation": "subtract", "left": 3, "right": 1},
+            ],
+        ),
+        # Wave 2: both multiplications ready
+        (
+            _TREE_TWO_BRANCHES,
+            {"root.left.left": 3, "root.right.left": 2},
+            [
+                {"id": "root.left", "operation": "multiply", "left": 3, "right": 3},
+                {"id": "root.right", "operation": "multiply", "left": 2, "right": 2},
+            ],
+        ),
+        # Wave 3: final addition ready
+        (
+            _TREE_TWO_BRANCHES,
+            {"root.left.left": 3, "root.right.left": 2, "root.left": 9, "root.right": 4},
+            [{"id": "root", "operation": "add", "left": 9, "right": 4}],
+        ),
+        # All completed — nothing left
+        (
+            _TREE_TWO_BRANCHES,
+            {"root.left.left": 3, "root.right.left": 2, "root.left": 9, "root.right": 4, "root": 13},
+            [],
+        ),
+    ],
+)
+def test_executable_operations(tree, completed, expected_ready):
+    assert executable_operations(tree, completed) == expected_ready

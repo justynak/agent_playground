@@ -143,7 +143,10 @@ def run(expression: str) -> str:
         for tc in msg.tool_calls:
             args = json.loads(tc.function.arguments)
             print(f"  [tool call] {tc.function.name}({json.dumps(args)})", file=sys.stderr)
-            result = dispatch_tool(tc.function.name, args, expression)
+            try:
+                result = dispatch_tool(tc.function.name, args, expression)
+            except (KeyError, TypeError) as e:
+                result = {"error": f"Malformed tool call arguments: {e}"}
             print(f"  [tool result] {json.dumps(result)}", file=sys.stderr)
             messages.append({
                 "role": "tool",

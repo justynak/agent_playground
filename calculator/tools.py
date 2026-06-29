@@ -56,6 +56,22 @@ def _node_to_dict(node):
         raise ValueError(f"Unsupported expression element: {type(node).__name__}")
 
 
+def evaluate_operation(id: str, operation: str, left: float, right: float) -> dict:
+    if operation == "add":
+        result = left + right
+    elif operation == "subtract":
+        result = left - right
+    elif operation == "multiply":
+        result = left * right
+    elif operation == "divide":
+        if right == 0:
+            return {"error": "Division by zero"}
+        result = left / right
+    else:
+        return {"error": f"Unknown operation: {operation}"}
+    return {"id": id, "result": result}
+
+
 def executable_operations(tree: dict | int | float, completed: dict) -> list:
     result = []
     _collect_executable(tree, "root", completed, result)

@@ -125,6 +125,7 @@ def run(expression: str) -> str:
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": f"Process this expression: {expression}"},
     ]
+    consecutive_errors = 0
 
     for _ in range(20):
         response = client.chat.completions.create(
@@ -148,6 +149,12 @@ def run(expression: str) -> str:
             except (KeyError, TypeError) as e:
                 result = {"error": f"Malformed tool call arguments: {e}"}
             print(f"  [tool result] {json.dumps(result)}", file=sys.stderr)
+            if "error" in result:
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    return f"Error: {result['error']}"
+            else:
+                consecutive_errors = 0
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,

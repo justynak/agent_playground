@@ -5,6 +5,8 @@ on:
     paths:
       - "eu_ai_act_news/**"
   pull_request:
+    paths:
+      - "eu_ai_act_news/**"
 
 jobs:
   check:

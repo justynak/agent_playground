@@ -76,6 +76,10 @@ def evaluate_operation(id: str, operation: str, left: float, right: float) -> di
 
 
 def executable_operations(tree: dict | int | float, completed: dict) -> list:
+    if not isinstance(tree, dict):
+        if "root" not in completed:
+            return [{"id": "root", "result": tree}]
+        return []
     result = []
     _collect_executable(tree, "root", completed, result)
     return result

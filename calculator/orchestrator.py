@@ -45,7 +45,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "executable_operations",
-            "description": "Given the operation tree and a map of already-completed node results, returns the operations whose inputs are fully resolved and can be evaluated now. Call with an empty completed dict on the first call, then with growing completed after each wave. Returns an empty list when all operations are done.",
+            "description": "Given the operation tree and a map of already-completed node results, returns the operations whose inputs are fully resolved and can be evaluated now. Call with an empty completed dict on the first call, then with growing completed after each wave. Returns an empty list when all operations are done. For a bare-number expression, returns [{\"id\": \"root\", \"result\": <number>}] on the first call — add it directly to completed without spawning a sub-agent.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -88,7 +88,9 @@ When given an expression:
 2. If invalid, report the error and stop.
 3. If valid, call parse_expression to get the operation tree.
 4. Call executable_operations with the tree and an empty completed dict ({}).
-5. For each operation returned, call spawn_evaluator_agent to delegate it to a sub-agent.
+5. For each entry returned by executable_operations:
+   - If it has an "operation" key, call spawn_evaluator_agent to delegate it to a sub-agent.
+   - If it has a "result" key but no "operation" key, it is pre-resolved — add it directly to completed as {id: result} without spawning.
 6. Collect results into completed: add each {"id": ..., "result": ...} entry as {id: result}.
 7. Call executable_operations again with the updated completed dict.
 8. Repeat steps 5-7 until executable_operations returns an empty list.

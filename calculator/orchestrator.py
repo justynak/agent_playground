@@ -81,6 +81,8 @@ TOOLS = [
     },
 ]
 
+MAX_LLM_TURNS = 100  # safety cap; legitimately never reached for any reasonable expression
+
 SYSTEM_PROMPT = """You are a math expression evaluator.
 
 When given an expression:
@@ -127,7 +129,7 @@ def run(expression: str) -> str:
     ]
     consecutive_errors = 0
 
-    for _ in range(20):
+    for _ in range(MAX_LLM_TURNS):
         response = client.chat.completions.create(
             model="deepseek-v4-flash",
             messages=messages,
@@ -161,4 +163,4 @@ def run(expression: str) -> str:
                 "content": json.dumps(result),
             })
 
-    return "Orchestrator reached iteration limit."
+    return f"Orchestrator reached iteration limit ({MAX_LLM_TURNS} turns)."

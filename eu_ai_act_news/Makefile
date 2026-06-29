@@ -10,5 +10,9 @@ lint:
 test:
 	uv run pytest tests/ -v
 
+.PHONY: run
+run:
+	uv run python news_agent.py
+
 .PHONY: check
 check: lint test

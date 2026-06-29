@@ -22,10 +22,10 @@ jobs:
 
       - name: Install dependencies
         working-directory: calculator
-        run: uv sync --group dev
+        run: make install
 
       - name: Run integration tests
         working-directory: calculator
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        run: uv run pytest tests/ -v -m integration
+        run: make integration_tests

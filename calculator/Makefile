@@ -10,5 +10,9 @@ lint:
 test:
 	uv run pytest tests/ -v -m "not integration"
 
+.PHONY: integration_tests
+integration_tests:
+	uv run --env-file .env pytest tests/ -v -m integration
+
 .PHONY: check
 check: lint test

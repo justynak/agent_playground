@@ -4,7 +4,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
-from tools import prefilter_syntax, parse_expression, executable_operations
+from tools import prefilter_syntax, parse_expression, executable_operations, evaluate_operation
 
 
 @pytest.mark.parametrize(
@@ -63,6 +63,17 @@ def test_prefilter_syntax(expression, expected_valid):
             },
         ),
         ("-5+3", {"operation": "add", "left": -5, "right": 3}),
+        # Negative number as right operand
+        ("4*-2", {"operation": "multiply", "left": 4, "right": -2}),
+        # Negative number inside a subexpression
+        (
+            "(-3+4)*-2",
+            {
+                "operation": "multiply",
+                "left": {"operation": "add", "left": -3, "right": 4},
+                "right": -2,
+            },
+        ),
         ("5", 5),
     ],
 )
@@ -182,3 +193,21 @@ _TREE_TWO_BRANCHES = {
 )
 def test_executable_operations(tree, completed, expected_ready):
     assert executable_operations(tree, completed) == expected_ready
+
+
+@pytest.mark.parametrize(
+    "id,operation,left,right,expected",
+    [
+        ("root", "add", 2, 3, {"id": "root", "result": 5}),
+        ("root", "subtract", 10, 4, {"id": "root", "result": 6}),
+        ("root", "multiply", 3, 7, {"id": "root", "result": 21}),
+        ("root", "divide", 8, 2, {"id": "root", "result": 4.0}),
+        # Negative operands
+        ("root.left", "add", -3, 4, {"id": "root.left", "result": 1}),
+        ("root.left", "multiply", 1, -2, {"id": "root.left", "result": -2}),
+        # Division by zero
+        ("root", "divide", 5, 0, {"error": "Division by zero"}),
+    ],
+)
+def test_evaluate_operation(id, operation, left, right, expected):
+    assert evaluate_operation(id, operation, left, right) == expected

@@ -138,10 +138,16 @@ _TREE_TWO_BRANCHES = {
 @pytest.mark.parametrize(
     "tree,completed,expected_ready",
     [
-        # Leaf number — no operations to run
+        # Leaf number — pre-resolved at root, no sub-agent needed
         (
             5,
             {},
+            [{"id": "root", "result": 5}],
+        ),
+        # Leaf number already completed — nothing left
+        (
+            5,
+            {"root": 5},
             [],
         ),
         # Both children are numbers — root is immediately ready

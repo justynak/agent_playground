@@ -12,3 +12,8 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.4.0",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: requires live DeepSeek API (not run in standard CI)",
+]

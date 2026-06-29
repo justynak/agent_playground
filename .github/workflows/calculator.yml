@@ -27,4 +27,4 @@ jobs:
         run: uv run ruff check .
 
       - name: Test
-        run: uv run pytest tests/ -v
+        run: uv run pytest tests/ -v -m "not integration"

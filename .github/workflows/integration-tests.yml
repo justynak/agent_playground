@@ -1,0 +1,31 @@
+name: Integration Tests
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  integration:
+    if: |
+      github.event.issue.pull_request != null &&
+      contains(github.event.comment.body, 'integration tests') &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.issue.number }}/head
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        working-directory: calculator
+        run: uv sync --group dev
+
+      - name: Run integration tests
+        working-directory: calculator
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: uv run pytest tests/ -v -m integration

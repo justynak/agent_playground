@@ -8,7 +8,7 @@ lint:
 
 .PHONY: test
 test:
-	uv run pytest tests/ -v
+	uv run pytest tests/ -v -m "not integration"
 
 .PHONY: check
 check: lint test

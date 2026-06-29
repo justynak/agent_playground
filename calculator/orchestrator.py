@@ -152,7 +152,7 @@ def run(expression: str) -> str:
             if "error" in result:
                 consecutive_errors += 1
                 if consecutive_errors >= 3:
-                    return f"Error: {result['error']}"
+                    return f"Aborted: {consecutive_errors} consecutive tool errors. Last error: {result['error']}"
             else:
                 consecutive_errors = 0
             messages.append({

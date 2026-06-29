@@ -57,7 +57,7 @@ def run(id: str, operation: str, left: float, right: float) -> dict:
         tc = msg.tool_calls[0]
         args = json.loads(tc.function.arguments)
         print(f"    [sub-agent {id}] evaluate_operation({json.dumps(args)})", file=sys.stderr)
-        result = evaluate_operation(args["id"], args["operation"], args["left"], args["right"])
+        result = evaluate_operation(id, args["operation"], args["left"], args["right"])
         print(f"    [sub-agent {id}] result: {json.dumps(result)}", file=sys.stderr)
         return result
 

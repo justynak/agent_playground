@@ -75,6 +75,15 @@ def test_prefilter_syntax(expression, expected_valid):
             },
         ),
         ("5", 5),
+        # Negation of a compound sub-expression — must produce a subtract node, not crash
+        (
+            "-(3+5)",
+            {
+                "operation": "subtract",
+                "left": 0,
+                "right": {"operation": "add", "left": 3, "right": 5},
+            },
+        ),
     ],
 )
 def test_parse_expression_success(expression, expected_tree):

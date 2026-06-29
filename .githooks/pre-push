@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+export PATH="$HOME/.local/bin:$PATH"
+
 if git diff --name-only HEAD@{u} HEAD 2>/dev/null | grep -q '^calculator/'; then
   echo "[pre-push] calculator changes detected, running checks..."
   make -C calculator check

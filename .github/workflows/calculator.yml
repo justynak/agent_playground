@@ -4,11 +4,11 @@ on:
   push:
     paths:
       - "calculator/**"
-      - ".github/workflows/calculator.yml"
+      - ".github/workflows/calculator*.yml"
   pull_request:
     paths:
       - "calculator/**"
-      - ".github/workflows/calculator.yml"
+      - ".github/workflows/calculator*.yml"
 
 jobs:
   check:

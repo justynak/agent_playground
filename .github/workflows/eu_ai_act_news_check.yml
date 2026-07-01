@@ -4,9 +4,11 @@ on:
   push:
     paths:
       - "eu_ai_act_news/**"
+      - ".github/workflows/eu_ai_act_news_check.yml"
   pull_request:
     paths:
       - "eu_ai_act_news/**"
+      - ".github/workflows/eu_ai_act_news_check.yml"
 
 jobs:
   check:

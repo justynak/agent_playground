@@ -10,8 +10,8 @@ Takes an arithmetic expression like `(2+3)*4` and produces the correct numeric r
 
 ```bash
 cp .env.example .env        # add your DEEPSEEK_API_KEY
-uv run main.py "(2+3)*4"
-uv run main.py "100/4+7*3"
+make run EXPR="(2+3)*4"
+make run EXPR="100/4+7*3"
 ```
 
 `uv` resolves and installs dependencies automatically on first run. Output goes to stdout; tool call traces go to stderr.
@@ -104,7 +104,7 @@ The orchestrator loop is capped at `MAX_LLM_TURNS = 100` turns. This is a safety
 ## Running tests
 
 ```bash
-pytest tests/
+make test
 ```
 
 Tests cover all pure-Python tools and the orchestrator's bail-on-consecutive-errors logic (LLM calls are mocked).

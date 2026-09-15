@@ -10,10 +10,11 @@ The EU AI Act is the world's first comprehensive AI regulation — and it's movi
 
 ## How it works
 
-1. Scans 9 RSS feeds for articles mentioning the EU AI Act published in the last 24 hours
-2. If relevant articles are found, a DeepSeek-powered agent reads each one in full using tool calling
-3. Produces a structured Markdown digest grouped by: Key Developments, Legislative & Regulatory Updates, Industry & Compliance, Research & Expert Opinion
-4. Publishes the digest as a GitHub Issue — skips creation if nothing relevant was found
+1. Scans 9 RSS feeds for articles mentioning the EU AI Act published in the last 24 hours, deduping articles that appear in more than one feed
+2. Fetches the full text of each relevant article and asks DeepSeek to produce a structured, categorized summary for that single article (title, category, summary) — one model call per article, not one call for the whole digest
+3. Articles that fail to fetch or whose summary can't be parsed into a valid category are skipped and logged, rather than corrupting the whole run
+4. Deterministically renders the validated per-article summaries into a Markdown digest grouped by: Key Developments, Legislative & Regulatory Updates, Industry & Compliance, Research & Expert Opinion, plus a Sources section
+5. Publishes the digest as a GitHub Issue — skips creation if nothing relevant was found or no summaries could be produced
 
 The agent uses an allowlisted set of domains to prevent prompt injection via fetched article content.
 

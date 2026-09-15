@@ -14,5 +14,11 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
-    "ruff>=0.4.0",
+    "ruff==0.16.7",
 ]
+
+[tool.ruff.lint]
+# BLE001 (blind except) is intentionally allowed: this is a scheduled batch job over
+# untrusted network I/O (feeds, article fetches, LLM calls) where one bad item must not
+# crash the whole run. Every catch site logs/returns an error marker instead of swallowing.
+ignore = ["BLE001"]

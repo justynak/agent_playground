@@ -88,6 +88,31 @@ SUMMARIZE_TOOL = {
     },
 }
 
+VERIFY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "record_verification",
+        "description": "Records whether a summary is fully supported by the article text it claims to summarize.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "faithful": {
+                    "type": "boolean",
+                    "description": "True only if every factual claim in the summary is directly supported by the article text.",
+                },
+                "unsupported_claims": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Claims in the summary not supported by the article text. Empty if faithful is true.",
+                },
+            },
+            "required": ["faithful", "unsupported_claims"],
+        },
+    },
+}
+
+MAX_SUMMARY_ATTEMPTS = 3
+
 
 def _is_relevant(title: str, summary: str) -> bool:
     text = f"{title} {summary}".lower()
@@ -218,17 +243,12 @@ def _validate_summary_payload(payload: dict) -> dict[str, str] | None:
     return {"category": category, "summary": summary.strip()}
 
 
-def summarize_article(article: dict) -> dict[str, str] | None:
-    """Summarize a single article's full text into a structured, categorized summary.
+def _generate_summary_payload(article: dict, content: str, feedback: list[str] | None = None) -> dict[str, str] | None:
+    """Ask the model for one structured, categorized summary of the given article text.
 
-    Returns None (and logs) if the article can't be fetched or the model's response
-    can't be parsed into a valid payload — callers are expected to skip such articles.
+    If `feedback` (unsupported claims from a prior failed verification) is given, the
+    model is asked to correct them rather than starting from scratch.
     """
-    content_result = fetch_article_content(article["url"])
-    if "error" in content_result:
-        print(f"  [summarize] skipping {article['url']}: {content_result['error']}", file=sys.stderr)
-        return None
-
     system_prompt = (
         "You are an EU AI Act policy analyst. You will be given the full text of one news article.\n"
         "Summarize it in 2-4 sentences, using only information present in the article text below — "
@@ -236,9 +256,18 @@ def summarize_article(article: dict) -> dict[str, str] | None:
         f"Then call record_summary with your summary and the single best-fitting category from: "
         f"{', '.join(CATEGORIES)}."
     )
+    user_content = f"Article title: {article['title']}\n\nArticle text:\n{content}"
+    if feedback:
+        claims = "\n".join(f"- {claim}" for claim in feedback)
+        user_content += (
+            "\n\nYour previous summary made claims not supported by the article text above:\n"
+            f"{claims}\n"
+            "Write a corrected summary that avoids these unsupported claims."
+        )
+
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Article title: {article['title']}\n\nArticle text:\n{content_result['content']}"},
+        {"role": "user", "content": user_content},
     ]
 
     try:
@@ -250,15 +279,90 @@ def summarize_article(article: dict) -> dict[str, str] | None:
         )
         payload = json.loads(response.choices[0].message.tool_calls[0].function.arguments)
     except Exception as e:
-        print(f"  [summarize] failed for {article['url']}: {e}", file=sys.stderr)
+        print(f"  [summarize] generation call failed: {e}", file=sys.stderr)
         return None
 
-    validated = _validate_summary_payload(payload)
-    if validated is None:
-        print(f"  [summarize] invalid payload for {article['url']}: {payload}", file=sys.stderr)
+    return _validate_summary_payload(payload)
+
+
+def _validate_verification_payload(payload: dict) -> dict[str, Any] | None:
+    faithful = payload.get("faithful")
+    claims = payload.get("unsupported_claims")
+    if not isinstance(faithful, bool):
+        return None
+    if not isinstance(claims, list) or not all(isinstance(c, str) for c in claims):
+        return None
+    return {"faithful": faithful, "unsupported_claims": claims}
+
+
+def verify_summary(content: str, summary: str) -> dict[str, Any] | None:
+    """Judge whether `summary` is fully supported by the article text `content`.
+
+    Returns None if the judge call itself fails or returns something unparseable —
+    callers must treat that as "could not verify" (i.e. not faithful), not as a pass.
+    """
+    system_prompt = (
+        "You are a strict fact-checker. You will be given an article's full text and a summary of it.\n"
+        "Check whether every factual claim in the summary — dates, numbers, names, actions, outcomes — "
+        "is directly supported by the article text. Assume the summary is wrong until you find clear "
+        "support for each claim; do not give it the benefit of the doubt.\n"
+        "Call record_verification with your verdict."
+    )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Article text:\n{content}\n\nSummary to check:\n{summary}"},
+    ]
+
+    try:
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=messages,
+            tools=[VERIFY_TOOL],
+            tool_choice={"type": "function", "function": {"name": "record_verification"}},
+        )
+        payload = json.loads(response.choices[0].message.tool_calls[0].function.arguments)
+    except Exception as e:
+        print(f"  [verify] verification call failed: {e}", file=sys.stderr)
         return None
 
-    return {"title": article["title"], "url": article["url"], **validated}
+    return _validate_verification_payload(payload)
+
+
+def summarize_article(article: dict, max_attempts: int = MAX_SUMMARY_ATTEMPTS) -> dict[str, str] | None:
+    """Summarize a single article, verifying the summary against the article text before accepting it.
+
+    Regenerates the summary (with feedback on what was unsupported) up to `max_attempts`
+    times. If no attempt passes verification, the article is rejected and None is returned
+    — callers are expected to skip such articles rather than publish an unverified summary.
+    """
+    content_result = fetch_article_content(article["url"])
+    if "error" in content_result:
+        print(f"  [summarize] skipping {article['url']}: {content_result['error']}", file=sys.stderr)
+        return None
+    content = content_result["content"]
+
+    feedback: list[str] | None = None
+    for attempt in range(1, max_attempts + 1):
+        generated = _generate_summary_payload(article, content, feedback)
+        if generated is None:
+            print(f"  [summarize] {article['url']} attempt {attempt}/{max_attempts}: generation failed", file=sys.stderr)
+            feedback = None
+            continue
+
+        verification = verify_summary(content, generated["summary"])
+        if verification is not None and verification["faithful"]:
+            return {"title": article["title"], "url": article["url"], **generated}
+
+        unsupported = verification["unsupported_claims"] if verification else []
+        reason = unsupported or "verification call failed"
+        print(
+            f"  [summarize] {article['url']} attempt {attempt}/{max_attempts} failed verification: {reason}",
+            file=sys.stderr,
+        )
+        feedback = unsupported
+
+    print(f"  [summarize] rejected {article['url']} after {max_attempts} failed attempt(s)", file=sys.stderr)
+    return None
 
 
 def summarize_articles(articles: list[dict]) -> list[dict]:

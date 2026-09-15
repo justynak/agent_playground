@@ -13,14 +13,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import news_agent
 from news_agent import (
     CATEGORIES,
+    _generate_summary_payload,
     _is_allowed_domain,
     _is_relevant,
     _validate_summary_payload,
+    _validate_verification_payload,
     collect_relevant_articles,
     dedup_articles,
     render_digest,
     summarize_article,
     summarize_articles,
+    verify_summary,
 )
 
 
@@ -145,44 +148,170 @@ class TestCollectRelevantArticles:
             assert collect_relevant_articles() == []
 
 
+class TestGenerateSummaryPayload:
+    def test_returns_validated_payload_on_success(self):
+        article = {"title": "T", "url": "https://example.com/a"}
+        response = _llm_response_with_arguments({"category": CATEGORIES[0], "summary": "A summary."})
+        with patch("news_agent.client") as mock_client:
+            mock_client.chat.completions.create.return_value = response
+            result = _generate_summary_payload(article, "full text")
+        assert result == {"category": CATEGORIES[0], "summary": "A summary."}
+
+    def test_returns_none_when_model_picks_invalid_category(self):
+        article = {"title": "T", "url": "https://example.com/a"}
+        response = _llm_response_with_arguments({"category": "Not Real", "summary": "A summary."})
+        with patch("news_agent.client") as mock_client:
+            mock_client.chat.completions.create.return_value = response
+            assert _generate_summary_payload(article, "full text") is None
+
+    def test_returns_none_when_no_tool_call_is_made(self):
+        article = {"title": "T", "url": "https://example.com/a"}
+        response = MagicMock()
+        response.choices[0].message.tool_calls = []
+        with patch("news_agent.client") as mock_client:
+            mock_client.chat.completions.create.return_value = response
+            assert _generate_summary_payload(article, "full text") is None
+
+    def test_returns_none_on_api_error(self):
+        article = {"title": "T", "url": "https://example.com/a"}
+        with patch("news_agent.client") as mock_client:
+            mock_client.chat.completions.create.side_effect = RuntimeError("network down")
+            assert _generate_summary_payload(article, "full text") is None
+
+    def test_feedback_is_included_in_the_prompt(self):
+        article = {"title": "T", "url": "https://example.com/a"}
+        response = _llm_response_with_arguments({"category": CATEGORIES[0], "summary": "Corrected."})
+        with patch("news_agent.client") as mock_client:
+            mock_client.chat.completions.create.return_value = response
+            _generate_summary_payload(article, "full text", feedback=["the deadline is Q3 2026"])
+        _, kwargs = mock_client.chat.completions.create.call_args
+        user_message = kwargs["messages"][1]["content"]
+        assert "the deadline is Q3 2026" in user_message
+
+
+class TestValidateVerificationPayload:
+    def test_valid_faithful_payload(self):
+        payload = {"faithful": True, "unsupported_claims": []}
+        assert _validate_verification_payload(payload) == payload
+
+    def test_valid_unfaithful_payload_with_claims(self):
+        payload = {"faithful": False, "unsupported_claims": ["wrong date"]}
+        assert _validate_verification_payload(payload) == payload
+
+    def test_rejects_non_bool_faithful(self):
+        assert _validate_verification_payload({"faithful": "yes", "unsupported_claims": []}) is None
+
+    def test_rejects_non_list_claims(self):
+        assert _validate_verification_payload({"faithful": False, "unsupported_claims": "wrong date"}) is None
+
+    def test_rejects_claims_with_non_string_items(self):
+        assert _validate_verification_payload({"faithful": False, "unsupported_claims": [1, 2]}) is None
+
+
+class TestVerifySummary:
+    def test_returns_faithful_verdict(self):
+        response = _llm_response_with_arguments({"faithful": True, "unsupported_claims": []})
+        with patch("news_agent.client") as mock_client:
+            mock_client.chat.completions.create.return_value = response
+            assert verify_summary("full text", "a summary") == {"faithful": True, "unsupported_claims": []}
+
+    def test_returns_unfaithful_verdict_with_claims(self):
+        response = _llm_response_with_arguments({"faithful": False, "unsupported_claims": ["wrong date"]})
+        with patch("news_agent.client") as mock_client:
+            mock_client.chat.completions.create.return_value = response
+            result = verify_summary("full text", "a summary")
+        assert result == {"faithful": False, "unsupported_claims": ["wrong date"]}
+
+    def test_returns_none_on_malformed_response(self):
+        response = MagicMock()
+        response.choices[0].message.tool_calls = []
+        with patch("news_agent.client") as mock_client:
+            mock_client.chat.completions.create.return_value = response
+            assert verify_summary("full text", "a summary") is None
+
+    def test_returns_none_on_api_error(self):
+        with patch("news_agent.client") as mock_client:
+            mock_client.chat.completions.create.side_effect = RuntimeError("network down")
+            assert verify_summary("full text", "a summary") is None
+
+
 class TestSummarizeArticle:
     def test_skips_article_when_content_fetch_fails(self):
         article = {"title": "T", "url": "https://example.com/a"}
         with patch("news_agent.fetch_article_content", return_value={"error": "boom"}):
             assert summarize_article(article) is None
 
-    def test_returns_structured_summary_on_success(self):
+    def test_accepts_summary_that_passes_verification_on_first_attempt(self):
         article = {"title": "T", "url": "https://example.com/a"}
-        response = _llm_response_with_arguments({"category": CATEGORIES[0], "summary": "A summary."})
+        generated = {"category": CATEGORIES[0], "summary": "A faithful summary."}
         with patch("news_agent.fetch_article_content", return_value={"content": "full text", "url": article["url"]}), \
-                patch("news_agent.client") as mock_client:
-            mock_client.chat.completions.create.return_value = response
+                patch("news_agent._generate_summary_payload", return_value=generated) as mock_generate, \
+                patch("news_agent.verify_summary", return_value={"faithful": True, "unsupported_claims": []}) as mock_verify:
             result = summarize_article(article)
-        assert result == {"title": "T", "url": article["url"], "category": CATEGORIES[0], "summary": "A summary."}
+        assert result == {"title": "T", "url": article["url"], **generated}
+        assert mock_generate.call_count == 1
+        assert mock_verify.call_count == 1
 
-    def test_returns_none_when_model_picks_invalid_category(self):
+    def test_retries_with_feedback_after_failed_verification_then_succeeds(self):
         article = {"title": "T", "url": "https://example.com/a"}
-        response = _llm_response_with_arguments({"category": "Not Real", "summary": "A summary."})
-        with patch("news_agent.fetch_article_content", return_value={"content": "full text", "url": article["url"]}), \
-                patch("news_agent.client") as mock_client:
-            mock_client.chat.completions.create.return_value = response
-            assert summarize_article(article) is None
+        bad = {"category": CATEGORIES[0], "summary": "A summary with a made-up date."}
+        good = {"category": CATEGORIES[0], "summary": "A corrected summary."}
 
-    def test_returns_none_when_no_tool_call_is_made(self):
-        article = {"title": "T", "url": "https://example.com/a"}
-        response = MagicMock()
-        response.choices[0].message.tool_calls = []
         with patch("news_agent.fetch_article_content", return_value={"content": "full text", "url": article["url"]}), \
-                patch("news_agent.client") as mock_client:
-            mock_client.chat.completions.create.return_value = response
-            assert summarize_article(article) is None
+                patch("news_agent._generate_summary_payload", side_effect=[bad, good]) as mock_generate, \
+                patch(
+                    "news_agent.verify_summary",
+                    side_effect=[
+                        {"faithful": False, "unsupported_claims": ["the deadline is Q3 2026"]},
+                        {"faithful": True, "unsupported_claims": []},
+                    ],
+                ):
+            result = summarize_article(article)
 
-    def test_returns_none_on_api_error(self):
+        assert result == {"title": "T", "url": article["url"], **good}
+        assert mock_generate.call_count == 2
+        # second generation attempt must have been given the first attempt's unsupported claims
+        assert mock_generate.call_args_list[1].args[2] == ["the deadline is Q3 2026"]
+
+    def test_rejects_article_after_exhausting_max_attempts(self):
         article = {"title": "T", "url": "https://example.com/a"}
+        generated = {"category": CATEGORIES[0], "summary": "Always wrong."}
+
         with patch("news_agent.fetch_article_content", return_value={"content": "full text", "url": article["url"]}), \
-                patch("news_agent.client") as mock_client:
-            mock_client.chat.completions.create.side_effect = RuntimeError("network down")
-            assert summarize_article(article) is None
+                patch("news_agent._generate_summary_payload", return_value=generated) as mock_generate, \
+                patch(
+                    "news_agent.verify_summary",
+                    return_value={"faithful": False, "unsupported_claims": ["still wrong"]},
+                ) as mock_verify:
+            result = summarize_article(article, max_attempts=3)
+
+        assert result is None
+        assert mock_generate.call_count == 3
+        assert mock_verify.call_count == 3
+
+    def test_failed_verification_call_counts_as_a_failed_attempt(self):
+        article = {"title": "T", "url": "https://example.com/a"}
+        generated = {"category": CATEGORIES[0], "summary": "Some summary."}
+
+        with patch("news_agent.fetch_article_content", return_value={"content": "full text", "url": article["url"]}), \
+                patch("news_agent._generate_summary_payload", return_value=generated), \
+                patch("news_agent.verify_summary", return_value=None) as mock_verify:
+            result = summarize_article(article, max_attempts=2)
+
+        assert result is None
+        assert mock_verify.call_count == 2
+
+    def test_failed_generation_attempt_does_not_stop_retries(self):
+        article = {"title": "T", "url": "https://example.com/a"}
+        good = {"category": CATEGORIES[0], "summary": "Finally faithful."}
+
+        with patch("news_agent.fetch_article_content", return_value={"content": "full text", "url": article["url"]}), \
+                patch("news_agent._generate_summary_payload", side_effect=[None, good]) as mock_generate, \
+                patch("news_agent.verify_summary", return_value={"faithful": True, "unsupported_claims": []}):
+            result = summarize_article(article, max_attempts=3)
+
+        assert result == {"title": "T", "url": article["url"], **good}
+        assert mock_generate.call_count == 2
 
 
 class TestSummarizeArticles:

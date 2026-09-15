@@ -22,3 +22,8 @@ dev = [
 # untrusted network I/O (feeds, article fetches, LLM calls) where one bad item must not
 # crash the whole run. Every catch site logs/returns an error marker instead of swallowing.
 ignore = ["BLE001"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: requires live DeepSeek API and network access (not run in standard CI)",
+]

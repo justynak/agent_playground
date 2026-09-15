@@ -29,3 +29,30 @@ jobs:
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: make integration_tests
+
+  eu-ai-act-integration:
+    if: |
+      github.event.issue.pull_request != null &&
+      contains(github.event.comment.body, '/integration-test eu-ai-act-news') &&
+      github.event.comment.user.login == github.repository_owner
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.issue.number }}/head
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        working-directory: eu_ai_act_news
+        run: make install
+
+      - name: Run integration tests
+        working-directory: eu_ai_act_news
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: make integration_tests

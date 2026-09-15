@@ -1,6 +1,6 @@
 # EU AI Act News Agent — Current Architecture
 
-This document captures the **as-is** architecture of the agent as implemented in `news_agent.py`.
+This document captures the **as-is** architecture of the agent as implemented in the `news_agent` package (`config`, `collection`, `fetching`, `summarization`, `publishing`, `main`).
 
 ## System overview
 
@@ -36,7 +36,7 @@ flowchart TD
     subgraph Collection ["Article Collection"]
         COLLECT["collect_relevant_articles(days_back=1)"]
         FETCHRSS["fetch_rss_articles()<br/>feedparser per feed"]
-        RELEVANT{"_is_relevant()?<br/>keyword match"}
+        RELEVANT{"is_relevant()?<br/>keyword match"}
         DEDUP["dedup_articles()<br/>by URL"]
         COLLECT --> FETCHRSS --> RELEVANT
         RELEVANT -- yes --> DEDUP
@@ -51,9 +51,9 @@ flowchart TD
         SUMMARIZE["summarize_articles()"]
         ONE["summarize_article()"]
         FETCHTXT["fetch_article_content()<br/>requests + BeautifulSoup"]
-        ALLOW{"_is_allowed_domain()?"}
-        GEN["_generate_summary_payload()<br/>LLM tool call: record_summary"]
-        VALSUM{"_validate_summary_payload()?"}
+        ALLOW{"is_allowed_domain()?"}
+        GEN["generate_summary_payload()<br/>LLM tool call: record_summary"]
+        VALSUM{"validate_summary_payload()?"}
         VERIFY["verify_summary()<br/>LLM tool call: record_verification"]
         FAITHFUL{"faithful?"}
         ATTEMPTS{"attempts < MAX?"}
@@ -112,7 +112,7 @@ sequenceDiagram
 
     M->>S: summarize_article(article)
     S->>W: fetch_article_content(url)
-    W-->>S: text (max 4000 chars)
+    W-->>S: text (max MAX_ARTICLE_CHARS chars)
     loop up to MAX_SUMMARY_ATTEMPTS
         S->>L: record_summary (category, summary)
         alt parse/validate ok
@@ -138,10 +138,10 @@ sequenceDiagram
 | Component | Responsibility | Trust boundary |
 |-----------|----------------|----------------|
 | `fetch_rss_articles` | Parse feeds, date-filter, keyword-filter | Untrusted (RSS) |
-| `_is_relevant` | Keyword heuristic gate | — |
-| `_is_allowed_domain` | SSRF / prompt-injection mitigation | Security control |
+| `is_relevant` | Keyword heuristic gate | — |
+| `is_allowed_domain` | SSRF / prompt-injection mitigation | Security control |
 | `fetch_article_content` | Scrape + extract main text | Untrusted (web) |
-| `_generate_summary_payload` | LLM summary, structured output | LLM output validated |
+| `generate_summary_payload` | LLM summary, structured output | LLM output validated |
 | `verify_summary` | LLM fact-check of summary | LLM output validated |
 | `summarize_article` | Retry/feedback loop + accept/reject policy | — |
 | `render_digest` | Deterministic Markdown rendering | — |

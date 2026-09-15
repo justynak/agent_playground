@@ -2,9 +2,11 @@
 
 import json
 import os
+import re
 import sys
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 import feedparser
 import requests
@@ -57,6 +59,17 @@ AI_ACT_KEYWORDS = [
     "gpai", "ai liability", "ai office", "eu ai office",
     "eu ai", "europe ai", "european ai",
 ]
+
+# Word-boundary matching. Joining a keyword's words with `\s*[- ]\s*` tolerates
+# "ai act", "ai-act" and "AI Act" variants, while the surrounding \b stops partial
+# substring hits like "Thai activist" (contains "ai act") or "AI action plan".
+_KEYWORD_PATTERN = re.compile(
+    r"\b(?:" + "|".join(
+        r"\s*[- ]\s*".join(re.escape(word) for word in keyword.split())
+        for keyword in AI_ACT_KEYWORDS
+    ) + r")\b",
+    re.IGNORECASE,
+)
 
 CATEGORIES = [
     "Key Developments",
@@ -113,14 +126,17 @@ VERIFY_TOOL = {
 
 MAX_SUMMARY_ATTEMPTS = 3
 
+# Cap on how much article text we feed the model. Raised from the original 4000 so
+# most articles fit whole; when it still truncates, summarize_article refuses to
+# summarize the cut-off article rather than verifying against partial evidence.
+MAX_ARTICLE_CHARS = 12000
+
 
 def _is_relevant(title: str, summary: str) -> bool:
-    text = f"{title} {summary}".lower()
-    return any(kw in text for kw in AI_ACT_KEYWORDS)
+    return bool(_KEYWORD_PATTERN.search(f"{title} {summary}"))
 
 
 def _is_allowed_domain(url: str) -> bool:
-    from urllib.parse import urlparse
     domain = urlparse(url).netloc.removeprefix("www.")
     return any(domain == d or domain.endswith("." + d) for d in ALLOWED_DOMAINS)
 
@@ -173,18 +189,41 @@ def fetch_rss_articles(feed_name: str, feed_url: str, days_back: int = 1) -> dic
         return {"error": str(e), "feed_name": feed_name}
 
 
+MAX_REDIRECTS = 5
+
+
+def _fetch_following_safe_redirects(url: str, timeout: int = 15) -> requests.Response:
+    """GET `url`, following redirects manually and re-validating the domain on every hop.
+
+    `requests` follows redirects by default and would silently land on any host an
+    allowlisted server points at (SSRF). Here we disable auto-redirects and walk each
+    hop ourselves, refusing any `Location` that leaves the allowlist.
+    """
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    current = url
+    for _ in range(MAX_REDIRECTS + 1):
+        if not _is_allowed_domain(current):
+            domain = urlparse(current).netloc.removeprefix("www.")
+            raise ValueError(f"Redirect left the allowlist: {domain}")
+        resp = requests.get(current, timeout=timeout, headers=headers, allow_redirects=False)
+        if resp.is_redirect:
+            location = resp.headers.get("Location")
+            if not location:
+                # A redirect with no Location cannot be followed; return it rather than loop.
+                return resp
+            current = urljoin(current, location)
+            continue
+        return resp
+    raise ValueError(f"Too many redirects (>{MAX_REDIRECTS}) starting from {url}")
+
+
 def fetch_article_content(url: str) -> dict[str, Any]:
     if not _is_allowed_domain(url):
-        from urllib.parse import urlparse
         domain = urlparse(url).netloc.removeprefix("www.")
         return {"error": f"Domain not in allowlist: {domain}", "url": url}
 
     try:
-        resp = requests.get(
-            url,
-            timeout=15,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
-        )
+        resp = _fetch_following_safe_redirects(url)
         resp.raise_for_status()
 
         soup = BeautifulSoup(resp.text, "lxml")
@@ -203,7 +242,11 @@ def fetch_article_content(url: str) -> dict[str, Any]:
 
         text = (main_content or soup).get_text(separator=" ", strip=True)
         text = " ".join(text.split())
-        return {"url": url, "content": text[:4000], "truncated": len(text) > 4000}
+        return {
+            "url": url,
+            "content": text[:MAX_ARTICLE_CHARS],
+            "truncated": len(text) > MAX_ARTICLE_CHARS,
+        }
     except Exception as e:
         return {"error": str(e), "url": url}
 
@@ -243,11 +286,19 @@ def _validate_summary_payload(payload: dict) -> dict[str, str] | None:
     return {"category": category, "summary": summary.strip()}
 
 
-def _generate_summary_payload(article: dict, content: str, feedback: list[str] | None = None) -> dict[str, str] | None:
+def _generate_summary_payload(
+    article: dict,
+    content: str,
+    feedback: list[str] | None = None,
+    truncated: bool = False,
+) -> dict[str, str] | None:
     """Ask the model for one structured, categorized summary of the given article text.
 
     If `feedback` (unsupported claims from a prior failed verification) is given, the
     model is asked to correct them rather than starting from scratch.
+
+    If `truncated` is True the article text was cut off, so the model is told to
+    summarize only what is present and not infer anything about the missing portion.
     """
     system_prompt = (
         "You are an EU AI Act policy analyst. You will be given the full text of one news article.\n"
@@ -257,6 +308,11 @@ def _generate_summary_payload(article: dict, content: str, feedback: list[str] |
         f"{', '.join(CATEGORIES)}."
     )
     user_content = f"Article title: {article['title']}\n\nArticle text:\n{content}"
+    if truncated:
+        user_content += (
+            "\n\nNOTE: the article text above was cut off at a length limit and the ending is missing. "
+            "Summarize only what is present; do not state or imply anything about the parts you cannot see."
+        )
     if feedback:
         claims = "\n".join(f"- {claim}" for claim in feedback)
         user_content += (
@@ -295,8 +351,12 @@ def _validate_verification_payload(payload: dict) -> dict[str, Any] | None:
     return {"faithful": faithful, "unsupported_claims": claims}
 
 
-def verify_summary(content: str, summary: str) -> dict[str, Any] | None:
+def verify_summary(content: str, summary: str, truncated: bool = False) -> dict[str, Any] | None:
     """Judge whether `summary` is fully supported by the article text `content`.
+
+    If `truncated` is True the source text was cut off; the judge is told that claims
+    about anything beyond the shown text cannot be confirmed either way, so a summary
+    should not be approved on the assumption the missing text backs it up.
 
     Returns None if the judge call itself fails or returns something unparseable —
     callers must treat that as "could not verify" (i.e. not faithful), not as a pass.
@@ -308,9 +368,15 @@ def verify_summary(content: str, summary: str) -> dict[str, Any] | None:
         "support for each claim; do not give it the benefit of the doubt.\n"
         "Call record_verification with your verdict."
     )
+    user_content = f"Article text:\n{content}\n\nSummary to check:\n{summary}"
+    if truncated:
+        user_content += (
+            "\n\nNOTE: the article text above was cut off at a length limit. A claim can only be "
+            "counted as supported if the shown text backs it up; do not assume the missing remainder supports it."
+        )
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Article text:\n{content}\n\nSummary to check:\n{summary}"},
+        {"role": "user", "content": user_content},
     ]
 
     try:
@@ -340,16 +406,19 @@ def summarize_article(article: dict, max_attempts: int = MAX_SUMMARY_ATTEMPTS) -
         print(f"  [summarize] skipping {article['url']}: {content_result['error']}", file=sys.stderr)
         return None
     content = content_result["content"]
+    truncated = content_result.get("truncated", False)
+    if truncated:
+        print(f"  [summarize] {article['url']}: article truncated at {MAX_ARTICLE_CHARS} chars", file=sys.stderr)
 
     feedback: list[str] | None = None
     for attempt in range(1, max_attempts + 1):
-        generated = _generate_summary_payload(article, content, feedback)
+        generated = _generate_summary_payload(article, content, feedback, truncated=truncated)
         if generated is None:
             print(f"  [summarize] {article['url']} attempt {attempt}/{max_attempts}: generation failed", file=sys.stderr)
             feedback = None
             continue
 
-        verification = verify_summary(content, generated["summary"])
+        verification = verify_summary(content, generated["summary"], truncated=truncated)
         if verification is not None and verification["faithful"]:
             return {"title": article["title"], "url": article["url"], **generated}
 
@@ -398,19 +467,41 @@ def render_digest(summaries: list[dict]) -> str | None:
     return "\n\n".join(sections)
 
 
+ISSUES_PER_PAGE = 100
+MAX_ISSUE_PAGES = 10
+
+
 def issue_already_exists_today(today: str) -> bool:
+    """Return True if an open issue whose title contains `today` already exists.
+
+    Paginates through all open issues rather than only the first page, so a digest
+    buried beyond the first page is still detected (otherwise a duplicate could be
+    created for the same day).
+    """
     owner, repo = GITHUB_REPOSITORY.split("/", 1)
-    resp = requests.get(
-        f"https://api.github.com/repos/{owner}/{repo}/issues",
-        headers={
-            "Authorization": f"Bearer {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json",
-        },
-        params={"state": "open", "per_page": 20},
-    )
-    if resp.status_code != 200:
-        return False
-    return any(today in issue["title"] for issue in resp.json())
+    api_url = f"https://api.github.com/repos/{owner}/{repo}/issues"
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    for page in range(1, MAX_ISSUE_PAGES + 1):
+        resp = requests.get(
+            api_url,
+            headers=headers,
+            params={"state": "open", "per_page": ISSUES_PER_PAGE, "page": page},
+        )
+        if resp.status_code != 200:
+            return False
+
+        issues = resp.json()
+        if any(today in issue["title"] for issue in issues):
+            return True
+
+        # A short page means there are no further pages to fetch.
+        if len(issues) < ISSUES_PER_PAGE:
+            return False
+    return False
 
 
 def create_github_issue(title: str, body: str) -> str:

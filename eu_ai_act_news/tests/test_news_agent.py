@@ -3,6 +3,8 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # news_agent reads env vars at module level — stub them before import
 os.environ.setdefault("DEEPSEEK_API_KEY", "test")
 os.environ.setdefault("GITHUB_TOKEN", "test")
@@ -13,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import news_agent
 from news_agent import (
     CATEGORIES,
+    _fetch_following_safe_redirects,
     _generate_summary_payload,
     _is_allowed_domain,
     _is_relevant,
@@ -20,6 +23,8 @@ from news_agent import (
     _validate_verification_payload,
     collect_relevant_articles,
     dedup_articles,
+    fetch_article_content,
+    issue_already_exists_today,
     render_digest,
     summarize_article,
     summarize_articles,
@@ -43,6 +48,23 @@ class TestIsRelevant:
     def test_case_insensitive(self):
         assert _is_relevant("AI REGULATION UPDATE", "") is True
 
+    def test_substring_false_positive_ai_act_in_thai_activist(self):
+        # "Thai activist" contains the substring "ai act" but is not about the AI Act
+        assert _is_relevant("Thai activist wins journalism award", "") is False
+
+    def test_substring_false_positive_ai_action_plan(self):
+        # "AI action plan" contains "ai act" as a prefix of "action" — word boundaries reject it
+        assert _is_relevant("Government unveils AI action plan", "") is False
+
+    def test_hyphenated_variant_matches(self):
+        assert _is_relevant("New ai-act guidance published", "") is True
+
+    def test_multi_word_keyword_tolerates_spacing(self):
+        assert _is_relevant("general   purpose  ai   rules", "") is True
+
+    def test_keyword_boundary_at_punctuation(self):
+        assert _is_relevant("The AI Act, explained", "") is True
+
 
 class TestIsAllowedDomain:
     def test_exact_match(self):
@@ -60,6 +82,87 @@ class TestIsAllowedDomain:
     def test_domain_spoofing_attempt(self):
         # euractiv.com.evil.com should not pass
         assert _is_allowed_domain("https://euractiv.com.evil.com/article") is False
+
+
+def _response(status_code=200, headers=None, text="", is_redirect=False):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.headers = headers or {}
+    resp.text = text
+    resp.is_redirect = is_redirect
+    resp.raise_for_status = MagicMock()
+    return resp
+
+
+class TestSafeRedirects:
+    def test_direct_response_returned_without_redirect(self):
+        resp = _response()
+        with patch("news_agent.requests.get", return_value=resp) as mock_get:
+            result = _fetch_following_safe_redirects("https://www.euractiv.com/article")
+        assert result is resp
+        assert mock_get.call_count == 1
+        # auto-redirects must be disabled so every hop is validated by us
+        assert mock_get.call_args.kwargs["allow_redirects"] is False
+
+    def test_follows_redirect_to_allowed_domain(self):
+        first = _response(status_code=302, headers={"Location": "https://www.politico.eu/real"}, is_redirect=True)
+        second = _response()
+        with patch("news_agent.requests.get", side_effect=[first, second]) as mock_get:
+            result = _fetch_following_safe_redirects("https://www.euractiv.com/article")
+        assert result is second
+        assert mock_get.call_count == 2
+        assert mock_get.call_args_list[1].args[0] == "https://www.politico.eu/real"
+
+    def test_relative_redirect_location_is_resolved(self):
+        first = _response(status_code=302, headers={"Location": "/moved"}, is_redirect=True)
+        second = _response()
+        with patch("news_agent.requests.get", side_effect=[first, second]) as mock_get:
+            _fetch_following_safe_redirects("https://www.euractiv.com/a/b")
+        assert mock_get.call_args_list[1].args[0] == "https://www.euractiv.com/moved"
+
+    def test_redirect_to_blocked_domain_is_rejected(self):
+        first = _response(status_code=302, headers={"Location": "https://evil.com/x"}, is_redirect=True)
+        with patch("news_agent.requests.get", return_value=first) as mock_get, \
+                pytest.raises(ValueError, match="allowlist"):
+            _fetch_following_safe_redirects("https://www.euractiv.com/article")
+        # the off-allowlist host must never be requested
+        assert mock_get.call_count == 1
+
+    def test_exceeding_max_redirects_raises(self):
+        def always_redirect(*args, **kwargs):
+            return _response(status_code=302, headers={"Location": "https://www.euractiv.com/loop"}, is_redirect=True)
+
+        with patch("news_agent.requests.get", side_effect=always_redirect), \
+                pytest.raises(ValueError, match="Too many redirects"):
+            _fetch_following_safe_redirects("https://www.euractiv.com/article")
+
+    def test_redirect_without_location_header_stops(self):
+        resp = _response(status_code=302, headers={}, is_redirect=True)
+        with patch("news_agent.requests.get", return_value=resp):
+            assert _fetch_following_safe_redirects("https://www.euractiv.com/article") is resp
+
+
+class TestFetchArticleContentAllowlist:
+    def test_off_allowlist_url_rejected_before_any_request(self):
+        with patch("news_agent.requests.get") as mock_get:
+            result = fetch_article_content("https://evil.com/article")
+        assert "error" in result
+        mock_get.assert_not_called()
+
+    def test_redirect_escape_is_reported_as_error_not_crash(self):
+        first = _response(status_code=302, headers={"Location": "https://evil.com/x"}, is_redirect=True)
+        with patch("news_agent.requests.get", return_value=first):
+            result = fetch_article_content("https://www.euractiv.com/article")
+        assert "error" in result
+        assert "allowlist" in result["error"]
+
+    def test_truncated_flag_set_when_over_limit(self):
+        long_text = "<p>" + ("word " * 5000) + "</p>"
+        resp = _response(text=f"<article>{long_text}</article>")
+        with patch("news_agent.requests.get", return_value=resp):
+            result = fetch_article_content("https://www.euractiv.com/article")
+        assert result["truncated"] is True
+        assert len(result["content"]) == news_agent.MAX_ARTICLE_CHARS
 
 
 def _llm_response_with_arguments(arguments: dict) -> MagicMock:
@@ -188,6 +291,26 @@ class TestGenerateSummaryPayload:
         user_message = kwargs["messages"][1]["content"]
         assert "the deadline is Q3 2026" in user_message
 
+    def test_truncation_notice_absent_by_default(self):
+        article = {"title": "T", "url": "https://example.com/a"}
+        response = _llm_response_with_arguments({"category": CATEGORIES[0], "summary": "A summary."})
+        with patch("news_agent.client") as mock_client:
+            mock_client.chat.completions.create.return_value = response
+            _generate_summary_payload(article, "full text")
+        _, kwargs = mock_client.chat.completions.create.call_args
+        user_message = kwargs["messages"][1]["content"]
+        assert "cut off" not in user_message
+
+    def test_truncation_notice_included_when_truncated(self):
+        article = {"title": "T", "url": "https://example.com/a"}
+        response = _llm_response_with_arguments({"category": CATEGORIES[0], "summary": "A summary."})
+        with patch("news_agent.client") as mock_client:
+            mock_client.chat.completions.create.return_value = response
+            _generate_summary_payload(article, "full text", truncated=True)
+        _, kwargs = mock_client.chat.completions.create.call_args
+        user_message = kwargs["messages"][1]["content"]
+        assert "cut off" in user_message
+
 
 class TestValidateVerificationPayload:
     def test_valid_faithful_payload(self):
@@ -233,6 +356,24 @@ class TestVerifySummary:
         with patch("news_agent.client") as mock_client:
             mock_client.chat.completions.create.side_effect = RuntimeError("network down")
             assert verify_summary("full text", "a summary") is None
+
+    def test_truncation_notice_absent_by_default(self):
+        response = _llm_response_with_arguments({"faithful": True, "unsupported_claims": []})
+        with patch("news_agent.client") as mock_client:
+            mock_client.chat.completions.create.return_value = response
+            verify_summary("full text", "a summary")
+        _, kwargs = mock_client.chat.completions.create.call_args
+        user_message = kwargs["messages"][1]["content"]
+        assert "cut off" not in user_message
+
+    def test_truncation_notice_included_when_truncated(self):
+        response = _llm_response_with_arguments({"faithful": True, "unsupported_claims": []})
+        with patch("news_agent.client") as mock_client:
+            mock_client.chat.completions.create.return_value = response
+            verify_summary("full text", "a summary", truncated=True)
+        _, kwargs = mock_client.chat.completions.create.call_args
+        user_message = kwargs["messages"][1]["content"]
+        assert "cut off" in user_message
 
 
 class TestSummarizeArticle:
@@ -313,6 +454,46 @@ class TestSummarizeArticle:
         assert result == {"title": "T", "url": article["url"], **good}
         assert mock_generate.call_count == 2
 
+    def test_truncation_flag_is_propagated_to_generate_and_verify(self):
+        article = {"title": "T", "url": "https://example.com/a"}
+        generated = {"category": CATEGORIES[0], "summary": "A summary."}
+        content_result = {"content": "full text", "url": article["url"], "truncated": True}
+
+        with patch("news_agent.fetch_article_content", return_value=content_result), \
+                patch("news_agent._generate_summary_payload", return_value=generated) as mock_generate, \
+                patch("news_agent.verify_summary", return_value={"faithful": True, "unsupported_claims": []}) as mock_verify:
+            result = summarize_article(article)
+
+        assert result == {"title": "T", "url": article["url"], **generated}
+        assert mock_generate.call_args.kwargs["truncated"] is True
+        assert mock_verify.call_args.kwargs["truncated"] is True
+
+    def test_non_truncated_article_passes_truncated_false(self):
+        article = {"title": "T", "url": "https://example.com/a"}
+        generated = {"category": CATEGORIES[0], "summary": "A summary."}
+        content_result = {"content": "full text", "url": article["url"], "truncated": False}
+
+        with patch("news_agent.fetch_article_content", return_value=content_result), \
+                patch("news_agent._generate_summary_payload", return_value=generated) as mock_generate, \
+                patch("news_agent.verify_summary", return_value={"faithful": True, "unsupported_claims": []}) as mock_verify:
+            summarize_article(article)
+
+        assert mock_generate.call_args.kwargs["truncated"] is False
+        assert mock_verify.call_args.kwargs["truncated"] is False
+
+    def test_missing_truncated_key_defaults_to_false(self):
+        # fetch_article_content results built by older/other callers may omit the key
+        article = {"title": "T", "url": "https://example.com/a"}
+        generated = {"category": CATEGORIES[0], "summary": "A summary."}
+        content_result = {"content": "full text", "url": article["url"]}
+
+        with patch("news_agent.fetch_article_content", return_value=content_result), \
+                patch("news_agent._generate_summary_payload", return_value=generated) as mock_generate, \
+                patch("news_agent.verify_summary", return_value={"faithful": True, "unsupported_claims": []}):
+            summarize_article(article)
+
+        assert mock_generate.call_args.kwargs["truncated"] is False
+
 
 class TestSummarizeArticles:
     def test_keeps_successes_and_skips_failures(self):
@@ -333,3 +514,64 @@ class TestSummarizeArticles:
 
     def test_empty_input_returns_empty_list(self):
         assert summarize_articles([]) == []
+
+
+def _issues_response(issues: list[dict], status_code: int = 200) -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = issues
+    return resp
+
+
+def _issues_titles(count: int, prefix: str = "Some issue") -> list[dict]:
+    return [{"title": f"{prefix} #{i}"} for i in range(count)]
+
+
+class TestIssueAlreadyExistsToday:
+    def test_returns_true_when_today_is_on_first_page(self):
+        issues = [{"title": "EU AI Act News Digest — 2026-01-01"}, {"title": "Other"}]
+        with patch("news_agent.requests.get", return_value=_issues_response(issues)):
+            assert issue_already_exists_today("2026-01-01") is True
+
+    def test_returns_false_when_today_is_absent(self):
+        issues = [{"title": "Some unrelated issue"}]
+        with patch("news_agent.requests.get", return_value=_issues_response(issues)):
+            assert issue_already_exists_today("2026-01-01") is False
+
+    def test_short_first_page_stops_after_one_request(self):
+        # fewer than a full page means there are no further pages
+        issues = _issues_titles(3)
+        with patch("news_agent.requests.get", return_value=_issues_response(issues)) as mock_get:
+            assert issue_already_exists_today("2026-01-01") is False
+        assert mock_get.call_count == 1
+
+    def test_finds_today_on_a_later_page(self):
+        # first page full (no match), second page short but contains today's digest
+        first_page = _issues_titles(news_agent.ISSUES_PER_PAGE)
+        second_page = [{"title": "EU AI Act News Digest — 2026-01-01"}]
+        with patch(
+            "news_agent.requests.get",
+            side_effect=[_issues_response(first_page), _issues_response(second_page)],
+        ) as mock_get:
+            assert issue_already_exists_today("2026-01-01") is True
+        assert mock_get.call_count == 2
+        # the second request must ask for page 2
+        assert mock_get.call_args_list[1].kwargs["params"]["page"] == 2
+
+    def test_pagination_stops_when_no_more_pages(self):
+        # every page is full but none contains today; must terminate via MAX_ISSUE_PAGES
+        full_page = _issues_titles(news_agent.ISSUES_PER_PAGE)
+        with patch("news_agent.requests.get", return_value=_issues_response(full_page)) as mock_get:
+            assert issue_already_exists_today("2026-01-01") is False
+        assert mock_get.call_count == news_agent.MAX_ISSUE_PAGES
+
+    def test_returns_false_on_api_error(self):
+        with patch("news_agent.requests.get", return_value=_issues_response([], status_code=500)):
+            assert issue_already_exists_today("2026-01-01") is False
+
+    def test_requests_only_open_issues_with_per_page(self):
+        with patch("news_agent.requests.get", return_value=_issues_response([])) as mock_get:
+            issue_already_exists_today("2026-01-01")
+        params = mock_get.call_args.kwargs["params"]
+        assert params["state"] == "open"
+        assert params["per_page"] == news_agent.ISSUES_PER_PAGE

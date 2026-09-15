@@ -42,6 +42,8 @@ The agent uses an allowlisted set of domains to prevent prompt injection via fet
 
 The workflow runs daily at 8:00 AM UTC. You can also trigger it manually from the Actions tab.
 
+The same `DEEPSEEK_API_KEY` secret is reused by the end-to-end integration test — no separate secret needed. That test runs against real feeds and a live model, so it's not part of standard CI; the repo owner can trigger it on any PR by commenting `/integration-test eu-ai-act-news`.
+
 ## Tech stack
 
 - **Agent framework**: OpenAI-compatible tool calling (DeepSeek `deepseek-chat`)

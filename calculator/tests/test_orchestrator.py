@@ -1,12 +1,13 @@
 import json
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 os.environ.setdefault("DEEPSEEK_API_KEY", "test")  # prevent import-time crash when key is absent
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 import orchestrator
 
 

@@ -25,5 +25,15 @@ jobs:
       - name: Install dependencies
         run: make install
 
-      - name: Check
-        run: make check
+      - name: Lint
+        run: make lint
+
+      - name: Test with coverage
+        run: make coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: calculator-coverage
+          path: calculator/htmlcov/

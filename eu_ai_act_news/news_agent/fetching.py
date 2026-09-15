@@ -1,12 +1,17 @@
 """Article fetching: allowlist enforcement, SSRF-safe redirects, HTML text extraction."""
 
+import logging
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
+from opentelemetry import trace
 
 from .config import ALLOWED_DOMAINS, MAX_ARTICLE_CHARS, MAX_REDIRECTS
+
+logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
@@ -45,34 +50,47 @@ def fetch_following_safe_redirects(url: str, timeout: int = 15) -> requests.Resp
 
 
 def fetch_article_content(url: str) -> dict[str, Any]:
-    if not is_allowed_domain(url):
-        domain = urlparse(url).netloc.removeprefix("www.")
-        return {"error": f"Domain not in allowlist: {domain}", "url": url}
+    with tracer.start_as_current_span("fetching.fetch_article_content") as span:
+        span.set_attribute("article.url", url)
 
-    try:
-        resp = fetch_following_safe_redirects(url)
-        resp.raise_for_status()
+        if not is_allowed_domain(url):
+            domain = urlparse(url).netloc.removeprefix("www.")
+            error = f"Domain not in allowlist: {domain}"
+            span.set_attribute("article.error", error)
+            span.set_status(trace.StatusCode.ERROR, error)
+            logger.warning("[fetch] %s: %s", url, error)
+            return {"error": error, "url": url}
 
-        soup = BeautifulSoup(resp.text, "lxml")
+        try:
+            resp = fetch_following_safe_redirects(url)
+            resp.raise_for_status()
 
-        for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
-            tag.decompose()
+            soup = BeautifulSoup(resp.text, "lxml")
 
-        main_content = (
-            soup.find("article")
-            or soup.find("main")
-            or soup.find(attrs={"class": lambda c: c and any(
-                x in " ".join(c) for x in CONTENT_CLASS_HINTS
-            )})
-            or soup.body
-        )
+            for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+                tag.decompose()
 
-        text = (main_content or soup).get_text(separator=" ", strip=True)
-        text = " ".join(text.split())
-        return {
-            "url": url,
-            "content": text[:MAX_ARTICLE_CHARS],
-            "truncated": len(text) > MAX_ARTICLE_CHARS,
-        }
-    except Exception as e:
-        return {"error": str(e), "url": url}
+            main_content = (
+                soup.find("article")
+                or soup.find("main")
+                or soup.find(attrs={"class": lambda c: c and any(
+                    x in " ".join(c) for x in CONTENT_CLASS_HINTS
+                )})
+                or soup.body
+            )
+
+            text = (main_content or soup).get_text(separator=" ", strip=True)
+            text = " ".join(text.split())
+            truncated = len(text) > MAX_ARTICLE_CHARS
+            span.set_attribute("article.content_chars", min(len(text), MAX_ARTICLE_CHARS))
+            span.set_attribute("article.truncated", truncated)
+            return {
+                "url": url,
+                "content": text[:MAX_ARTICLE_CHARS],
+                "truncated": truncated,
+            }
+        except Exception as e:
+            span.set_attribute("article.error", str(e))
+            span.set_status(trace.StatusCode.ERROR, str(e))
+            logger.warning("[fetch] %s: failed: %s", url, e)
+            return {"error": str(e), "url": url}

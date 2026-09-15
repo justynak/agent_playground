@@ -1,10 +1,12 @@
 """LLM summarization and independent verification of per-article summaries."""
 
 import json
-import sys
+import logging
+import time
 from typing import Any
 
 from openai import OpenAI
+from opentelemetry import trace
 
 from .config import (
     CATEGORIES,
@@ -15,6 +17,14 @@ from .config import (
     VERIFY_TOOL,
 )
 from .fetching import fetch_article_content
+from .telemetry import (
+    articles_processed_total,
+    llm_call_duration_seconds,
+    verification_attempts_total,
+)
+
+logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 client = OpenAI(
     api_key=DEEPSEEK_API_KEY,
@@ -72,19 +82,30 @@ def generate_summary_payload(
         {"role": "user", "content": user_content},
     ]
 
-    try:
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=messages,
-            tools=[SUMMARIZE_TOOL],
-            tool_choice={"type": "function", "function": {"name": "record_summary"}},
-        )
-        payload = json.loads(response.choices[0].message.tool_calls[0].function.arguments)
-    except Exception as e:
-        print(f"  [summarize] generation call failed: {e}", file=sys.stderr)
-        return None
+    with tracer.start_as_current_span("summarization.generate") as span:
+        span.set_attribute("llm.model", "deepseek-chat")
+        span.set_attribute("llm.retry", feedback is not None)
+        start = time.monotonic()
+        try:
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=messages,
+                tools=[SUMMARIZE_TOOL],
+                tool_choice={"type": "function", "function": {"name": "record_summary"}},
+            )
+            payload = json.loads(response.choices[0].message.tool_calls[0].function.arguments)
+        except Exception as e:
+            span.set_status(trace.StatusCode.ERROR, str(e))
+            logger.warning("[summarize] generation call failed: %s", e)
+            return None
+        finally:
+            llm_call_duration_seconds.record(time.monotonic() - start, {"call_type": "generate"})
 
-    return validate_summary_payload(payload)
+        result = validate_summary_payload(payload)
+        span.set_attribute("llm.valid_payload", result is not None)
+        if result is not None:
+            span.set_attribute("summary.category", result["category"])
+        return result
 
 
 def validate_verification_payload(payload: dict) -> dict[str, Any] | None:
@@ -125,19 +146,29 @@ def verify_summary(content: str, summary: str, truncated: bool = False) -> dict[
         {"role": "user", "content": user_content},
     ]
 
-    try:
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=messages,
-            tools=[VERIFY_TOOL],
-            tool_choice={"type": "function", "function": {"name": "record_verification"}},
-        )
-        payload = json.loads(response.choices[0].message.tool_calls[0].function.arguments)
-    except Exception as e:
-        print(f"  [verify] verification call failed: {e}", file=sys.stderr)
-        return None
+    with tracer.start_as_current_span("summarization.verify") as span:
+        span.set_attribute("llm.model", "deepseek-chat")
+        start = time.monotonic()
+        try:
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=messages,
+                tools=[VERIFY_TOOL],
+                tool_choice={"type": "function", "function": {"name": "record_verification"}},
+            )
+            payload = json.loads(response.choices[0].message.tool_calls[0].function.arguments)
+        except Exception as e:
+            span.set_status(trace.StatusCode.ERROR, str(e))
+            logger.warning("[verify] verification call failed: %s", e)
+            return None
+        finally:
+            llm_call_duration_seconds.record(time.monotonic() - start, {"call_type": "verify"})
 
-    return validate_verification_payload(payload)
+        result = validate_verification_payload(payload)
+        if result is not None:
+            span.set_attribute("verification.faithful", result["faithful"])
+            span.set_attribute("verification.unsupported_claims_count", len(result["unsupported_claims"]))
+        return result
 
 
 def summarize_article(article: dict, max_attempts: int = MAX_SUMMARY_ATTEMPTS) -> dict[str, str] | None:
@@ -147,37 +178,62 @@ def summarize_article(article: dict, max_attempts: int = MAX_SUMMARY_ATTEMPTS) -
     times. If no attempt passes verification, the article is rejected and None is returned
     — callers are expected to skip such articles rather than publish an unverified summary.
     """
-    content_result = fetch_article_content(article["url"])
-    if "error" in content_result:
-        print(f"  [summarize] skipping {article['url']}: {content_result['error']}", file=sys.stderr)
+    with tracer.start_as_current_span("summarization.summarize_article") as span:
+        span.set_attribute("article.url", article["url"])
+        span.set_attribute("article.title", article["title"])
+
+        content_result = fetch_article_content(article["url"])
+        if "error" in content_result:
+            span.set_attribute("summarize.outcome", "rejected_fetch_error")
+            span.add_event("fetch_failed", {"error": content_result["error"]})
+            logger.info("[summarize] skipping %s: %s", article["url"], content_result["error"])
+            articles_processed_total.add(1, {"outcome": "rejected_fetch_error"})
+            return None
+        content = content_result["content"]
+        truncated = content_result.get("truncated", False)
+        span.set_attribute("article.truncated", truncated)
+        if truncated:
+            logger.info("[summarize] %s: article truncated at %d chars", article["url"], MAX_ARTICLE_CHARS)
+
+        feedback: list[str] | None = None
+        for attempt in range(1, max_attempts + 1):
+            generated = generate_summary_payload(article, content, feedback, truncated=truncated)
+            if generated is None:
+                span.add_event("attempt", {"attempt": attempt, "result": "generation_failed"})
+                logger.info("[summarize] %s attempt %d/%d: generation failed", article["url"], attempt, max_attempts)
+                verification_attempts_total.add(1, {"result": "generation_failed"})
+                feedback = None
+                continue
+
+            verification = verify_summary(content, generated["summary"], truncated=truncated)
+            if verification is not None and verification["faithful"]:
+                span.add_event("attempt", {"attempt": attempt, "result": "faithful"})
+                span.set_attribute("summarize.outcome", "accepted")
+                span.set_attribute("summarize.attempts_used", attempt)
+                span.set_attribute("summary.category", generated["category"])
+                verification_attempts_total.add(1, {"result": "faithful"})
+                articles_processed_total.add(1, {"outcome": "accepted"})
+                return {"title": article["title"], "url": article["url"], **generated}
+
+            unsupported = verification["unsupported_claims"] if verification else []
+            result_label = "unfaithful" if verification else "verify_failed"
+            reason = unsupported or "verification call failed"
+            span.add_event("attempt", {
+                "attempt": attempt,
+                "result": result_label,
+                "unsupported_claims": unsupported,
+            })
+            logger.info(
+                "[summarize] %s attempt %d/%d failed verification: %s", article["url"], attempt, max_attempts, reason
+            )
+            verification_attempts_total.add(1, {"result": result_label})
+            feedback = unsupported
+
+        span.set_attribute("summarize.outcome", "rejected_verification")
+        span.set_attribute("summarize.attempts_used", max_attempts)
+        logger.info("[summarize] rejected %s after %d failed attempt(s)", article["url"], max_attempts)
+        articles_processed_total.add(1, {"outcome": "rejected_verification"})
         return None
-    content = content_result["content"]
-    truncated = content_result.get("truncated", False)
-    if truncated:
-        print(f"  [summarize] {article['url']}: article truncated at {MAX_ARTICLE_CHARS} chars", file=sys.stderr)
-
-    feedback: list[str] | None = None
-    for attempt in range(1, max_attempts + 1):
-        generated = generate_summary_payload(article, content, feedback, truncated=truncated)
-        if generated is None:
-            print(f"  [summarize] {article['url']} attempt {attempt}/{max_attempts}: generation failed", file=sys.stderr)
-            feedback = None
-            continue
-
-        verification = verify_summary(content, generated["summary"], truncated=truncated)
-        if verification is not None and verification["faithful"]:
-            return {"title": article["title"], "url": article["url"], **generated}
-
-        unsupported = verification["unsupported_claims"] if verification else []
-        reason = unsupported or "verification call failed"
-        print(
-            f"  [summarize] {article['url']} attempt {attempt}/{max_attempts} failed verification: {reason}",
-            file=sys.stderr,
-        )
-        feedback = unsupported
-
-    print(f"  [summarize] rejected {article['url']} after {max_attempts} failed attempt(s)", file=sys.stderr)
-    return None
 
 
 def summarize_articles(articles: list[dict]) -> list[dict]:

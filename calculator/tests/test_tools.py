@@ -1,10 +1,16 @@
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
-from tools import prefilter_syntax, parse_expression, executable_operations, evaluate_operation
+
+from tools import (
+    evaluate_operation,
+    executable_operations,
+    parse_expression,
+    prefilter_syntax,
+)
 
 
 @pytest.mark.parametrize(

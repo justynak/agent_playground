@@ -28,7 +28,7 @@ def parse_expression(expression: str) -> dict:
     try:
         tree = ast.parse(expression.strip(), mode='eval')
         return {"success": True, "operation_tree": _node_to_dict(tree.body)}
-    except (SyntaxError, ValueError) as e:
+    except (SyntaxError, ValueError, TypeError) as e:
         return {"success": False, "error": str(e)}
 
 
@@ -56,7 +56,7 @@ def _node_to_dict(node):
             return -operand
         return {"operation": "subtract", "left": 0, "right": operand}
     else:
-        raise ValueError(f"Unsupported expression element: {type(node).__name__}")
+        raise TypeError(f"Unsupported expression element: {type(node).__name__}")
 
 
 def evaluate_operation(id: str, operation: str, left: float, right: float) -> dict:
@@ -75,7 +75,7 @@ def evaluate_operation(id: str, operation: str, left: float, right: float) -> di
     return {"id": id, "result": result}
 
 
-def executable_operations(tree: dict | int | float, completed: dict) -> list:
+def executable_operations(tree: dict | float, completed: dict) -> list:
     if not isinstance(tree, dict):
         if "root" not in completed:
             return [{"id": "root", "result": tree}]

@@ -4,8 +4,8 @@ import sys
 
 from openai import OpenAI
 
-from tools import prefilter_syntax, parse_expression, executable_operations
 import sub_agent
+from tools import executable_operations, parse_expression, prefilter_syntax
 
 client = OpenAI(
     api_key=os.environ["DEEPSEEK_API_KEY"],
@@ -102,15 +102,14 @@ Never compute arithmetic yourself. Use spawn_evaluator_agent for every operation
 
 
 def dispatch_tool(name: str, args: dict, original_expression: str) -> dict:
-    if name in ("prefilter_syntax", "parse_expression"):
-        if args["expression"] != original_expression:
-            return {
-                "error": (
-                    f"Expression was modified before {name}. "
-                    f"Received: {args['expression']!r}, expected: {original_expression!r}. "
-                    "Pass the expression exactly as the user provided it."
-                )
-            }
+    if name in ("prefilter_syntax", "parse_expression") and args["expression"] != original_expression:
+        return {
+            "error": (
+                f"Expression was modified before {name}. "
+                f"Received: {args['expression']!r}, expected: {original_expression!r}. "
+                "Pass the expression exactly as the user provided it."
+            )
+        }
     if name == "prefilter_syntax":
         return prefilter_syntax(args["expression"])
     elif name == "parse_expression":

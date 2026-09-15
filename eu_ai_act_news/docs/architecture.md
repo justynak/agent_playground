@@ -1,6 +1,6 @@
 # EU AI Act News Agent — Current Architecture
 
-This document captures the **as-is** architecture of the agent as implemented in the `news_agent` package (`config`, `collection`, `fetching`, `summarization`, `publishing`, `main`).
+This document captures the **as-is** architecture of the agent as implemented in the `news_agent` package (`config`, `collection`, `fetching`, `summarization`, `publishing`, `main`, `telemetry`).
 
 ## System overview
 
@@ -19,6 +19,18 @@ The agent is a **deterministic batch pipeline** (scheduled, single run) that:
 The control flow is driven by **Python code**, not by the LLM. The LLM is only invoked
 at two well-defined points (summarize, verify). This is a *pipeline with LLM steps*,
 not an autonomous tool-using agent loop.
+
+## Observability
+
+Every stage in the diagram below is also an OpenTelemetry span, nested under one root
+span per run (`news_agent.run`) — `telemetry.py` owns setup/shutdown, all other modules
+just acquire a tracer/logger/meter the standard OTel way. Span attributes carry the
+*why* behind each decision node (`RELEVANT`, `ALLOW`, `VALSUM`, `FAITHFUL`, `ATTEMPTS`,
+`ANYSUM`) — rejection reasons, unsupported claims, retry counts, categories chosen — and
+structured logs plus per-run metrics (articles processed by outcome, verification
+attempts by result, LLM call latency) are exported alongside the traces. This is a
+cross-cutting concern layered onto the pipeline below, not a new stage in the control
+flow. See [`observability.md`](observability.md) for what's captured and how to view it.
 
 ## Diagram
 
@@ -146,6 +158,7 @@ sequenceDiagram
 | `summarize_article` | Retry/feedback loop + accept/reject policy | — |
 | `render_digest` | Deterministic Markdown rendering | — |
 | `issue_already_exists_today` / `create_github_issue` | Idempotency + publishing | GitHub API |
+| `telemetry.setup_telemetry` / `shutdown_telemetry` | OTel trace/log/metric provider lifecycle | OTLP endpoint |
 
 ## Design properties (as-is)
 
@@ -158,3 +171,6 @@ sequenceDiagram
 - **Graceful degradation**: Feed/article/LLM failures are logged and skipped; one bad
   item never aborts the run.
 - **Idempotency**: One digest per day, guarded by an open-issue title check.
+- **Explainable by construction**: every accept/reject decision is captured as an
+  OpenTelemetry span attribute or event at the point it's made, rather than
+  reconstructed after the fact — see [Observability](#observability).

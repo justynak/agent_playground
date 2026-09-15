@@ -48,3 +48,12 @@ The workflow runs daily at 8:00 AM UTC. You can also trigger it manually from th
 - **Scheduling**: GitHub Actions cron
 - **Output**: GitHub Issues with labels `eu-ai-act`, `automated-digest`
 - **Dependencies**: `feedparser`, `beautifulsoup4`, `requests`, `openai`
+
+## Observability
+
+Every run is instrumented with OpenTelemetry — traces of the collect → summarize →
+verify → publish pipeline (including why each article was accepted or rejected),
+correlated structured logs, and run-over-run metrics. See
+[`docs/observability.md`](docs/observability.md) for what's captured and how to view it
+in Grafana, locally via `docker compose -f observability/docker-compose.yml up -d` or
+against a real backend like Grafana Cloud.

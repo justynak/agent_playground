@@ -24,6 +24,9 @@ dev = [
 ignore = ["BLE001"]
 
 [tool.pytest.ini_options]
+# Put the project root on sys.path so tests can `import news_agent` without a
+# checked-in sys.path hack. Resolved relative to the rootdir (this file).
+pythonpath = ["."]
 markers = [
     "integration: requires live DeepSeek API and network access (not run in standard CI)",
 ]

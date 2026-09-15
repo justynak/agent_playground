@@ -1,20 +1,9 @@
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-os.environ.setdefault("DEEPSEEK_API_KEY", "test")  # prevent import-time crash; real key required at runtime
-os.environ.setdefault("GITHUB_TOKEN", "test")
-os.environ.setdefault("GITHUB_REPOSITORY", "test/test")
-
 import pytest
 
-from news_agent import (
-    CATEGORIES,
-    collect_relevant_articles,
-    render_digest,
-    summarize_articles,
-)
+from news_agent.collection import collect_relevant_articles
+from news_agent.config import CATEGORIES
+from news_agent.publishing import render_digest
+from news_agent.summarization import summarize_articles
 
 # Bounds cost/runtime of a real run (each article can cost up to MAX_SUMMARY_ATTEMPTS
 # generate+verify LLM round trips) while still exercising the full pipeline for real.

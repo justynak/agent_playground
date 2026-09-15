@@ -16,7 +16,7 @@ integration_tests:
 
 .PHONY: run
 run:
-	uv run python news_agent.py
+	uv run python -m news_agent.main
 
 .PHONY: check
 check: lint test

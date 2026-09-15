@@ -17,6 +17,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-cov>=5.0.0",
     "ruff==0.16.7",
 ]
 
@@ -32,4 +33,13 @@ ignore = ["BLE001"]
 pythonpath = ["."]
 markers = [
     "integration: requires live DeepSeek API and network access (not run in standard CI)",
+]
+
+[tool.coverage.run]
+source = ["news_agent"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
 ]

@@ -10,6 +10,10 @@ lint:
 test:
 	uv run pytest tests/ -v -m "not integration"
 
+.PHONY: coverage
+coverage:
+	uv run pytest tests/ -v -m "not integration" --cov --cov-report=term-missing --cov-report=html
+
 .PHONY: integration_tests
 integration_tests:
 	uv run $(if $(wildcard .env),--env-file .env,) pytest tests/ -v -m integration

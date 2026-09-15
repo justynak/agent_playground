@@ -1,10 +1,9 @@
-#!/usr/bin/env python3
 """EU AI Act daily news agent using DeepSeek API with tool calling."""
 
 import json
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import feedparser
@@ -59,6 +58,36 @@ AI_ACT_KEYWORDS = [
     "eu ai", "europe ai", "european ai",
 ]
 
+CATEGORIES = [
+    "Key Developments",
+    "Legislative & Regulatory Updates",
+    "Industry & Compliance",
+    "Research & Expert Opinion",
+]
+
+SUMMARIZE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "record_summary",
+        "description": "Records a structured summary for a single article.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "description": "The single best-fitting category for this article.",
+                    "enum": CATEGORIES,
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "2-4 sentence summary of the article, grounded only in the provided article text.",
+                },
+            },
+            "required": ["category", "summary"],
+        },
+    },
+}
+
 
 def _is_relevant(title: str, summary: str) -> bool:
     text = f"{title} {summary}".lower()
@@ -73,7 +102,7 @@ def _is_allowed_domain(url: str) -> bool:
 
 def fetch_rss_articles(feed_name: str, feed_url: str, days_back: int = 1) -> dict[str, Any]:
     try:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+        cutoff = datetime.now(UTC) - timedelta(days=days_back)
         feed = feedparser.parse(
             feed_url,
             request_headers={"User-Agent": "Mozilla/5.0 (compatible; NewsResearchBot/1.0)"},
@@ -88,7 +117,7 @@ def fetch_rss_articles(feed_name: str, feed_url: str, days_back: int = 1) -> dic
             if hasattr(entry, "published_parsed") and entry.published_parsed:
                 import calendar
                 published = datetime.fromtimestamp(
-                    calendar.timegm(entry.published_parsed), tz=timezone.utc
+                    calendar.timegm(entry.published_parsed), tz=UTC
                 )
 
             if published and published < cutoff:
@@ -154,119 +183,115 @@ def fetch_article_content(url: str) -> dict[str, Any]:
         return {"error": str(e), "url": url}
 
 
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "fetch_rss_articles",
-            "description": (
-                "Fetch recent articles from a predefined RSS news feed. "
-                "Returns articles from the last N days, flagging those potentially related to the EU AI Act."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "feed_name": {
-                        "type": "string",
-                        "description": "Name of the RSS feed to fetch",
-                        "enum": [f["name"] for f in RSS_FEEDS],
-                    },
-                    "days_back": {
-                        "type": "integer",
-                        "description": "How many days back to search (default: 1)",
-                        "default": 1,
-                    },
-                },
-                "required": ["feed_name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "fetch_article_content",
-            "description": "Fetch and extract the full text of a specific article by URL. Use this to read a relevant article in detail.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "The full URL of the article to read",
-                    }
-                },
-                "required": ["url"],
-            },
-        },
-    },
-]
+def dedup_articles(articles: list[dict]) -> list[dict]:
+    """Dedup articles by URL (an article can appear in more than one feed), preserving order."""
+    seen = set()
+    result = []
+    for article in articles:
+        url = article.get("url")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        result.append(article)
+    return result
 
 
-def dispatch_tool(name: str, args: dict) -> Any:
-    if name == "fetch_rss_articles":
-        feed_name = args["feed_name"]
-        feed_url = next((f["url"] for f in RSS_FEEDS if f["name"] == feed_name), None)
-        if not feed_url:
-            return {"error": f"Unknown feed: {feed_name}"}
-        return fetch_rss_articles(feed_name, feed_url, args.get("days_back", 1))
-    elif name == "fetch_article_content":
-        return fetch_article_content(args["url"])
-    return {"error": f"Unknown tool: {name}"}
+def collect_relevant_articles(days_back: int = 1) -> list[dict]:
+    """Fetch every configured feed and return the deduped set of potentially relevant articles."""
+    all_articles = []
+    for feed in RSS_FEEDS:
+        result = fetch_rss_articles(feed["name"], feed["url"], days_back)
+        count = len(result.get("relevant_articles", []))
+        if count:
+            print(f"  [feeds] {feed['name']}: {count} relevant article(s)", file=sys.stderr)
+        all_articles.extend(result.get("relevant_articles", []))
+    return dedup_articles(all_articles)
 
 
-def run_agent(today: str) -> str:
-    feed_list = "\n".join(f"- {f['name']}" for f in RSS_FEEDS)
-    system_prompt = f"""You are an expert EU AI policy research agent. Today is {today}.
+def _validate_summary_payload(payload: dict) -> dict[str, str] | None:
+    category = payload.get("category")
+    summary = payload.get("summary")
+    if not isinstance(category, str) or category not in CATEGORIES:
+        return None
+    if not isinstance(summary, str) or not summary.strip():
+        return None
+    return {"category": category, "summary": summary.strip()}
 
-Your task: Find and summarize all significant EU AI Act news from the last 24 hours.
 
-Available RSS feeds to check:
-{feed_list}
+def summarize_article(article: dict) -> dict[str, str] | None:
+    """Summarize a single article's full text into a structured, categorized summary.
 
-Workflow:
-1. Call fetch_rss_articles for EVERY feed listed above (use days_back=1)
-2. For each article marked potentially_relevant=true, call fetch_article_content to read it in full
-3. After checking all feeds and reading relevant articles, write a comprehensive digest
+    Returns None (and logs) if the article can't be fetched or the model's response
+    can't be parsed into a valid payload — callers are expected to skip such articles.
+    """
+    content_result = fetch_article_content(article["url"])
+    if "error" in content_result:
+        print(f"  [summarize] skipping {article['url']}: {content_result['error']}", file=sys.stderr)
+        return None
 
-Your final digest must be formatted in Markdown with these sections:
-## Key Developments
-## Legislative & Regulatory Updates
-## Industry & Compliance
-## Research & Expert Opinion
-## Sources
-
-If no relevant news was found in any source, say so clearly — do not fabricate news.
-Always include direct URLs for every item you mention."""
-
+    system_prompt = (
+        "You are an EU AI Act policy analyst. You will be given the full text of one news article.\n"
+        "Summarize it in 2-4 sentences, using only information present in the article text below — "
+        "do not add outside knowledge or speculation.\n"
+        f"Then call record_summary with your summary and the single best-fitting category from: "
+        f"{', '.join(CATEGORIES)}."
+    )
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Research EU AI Act news for {today} and write the daily digest."},
+        {"role": "user", "content": f"Article title: {article['title']}\n\nArticle text:\n{content_result['content']}"},
     ]
 
-    for iteration in range(25):
+    try:
         response = client.chat.completions.create(
             model="deepseek-chat",
             messages=messages,
-            tools=TOOLS,
-            tool_choice="auto",
+            tools=[SUMMARIZE_TOOL],
+            tool_choice={"type": "function", "function": {"name": "record_summary"}},
         )
+        payload = json.loads(response.choices[0].message.tool_calls[0].function.arguments)
+    except Exception as e:
+        print(f"  [summarize] failed for {article['url']}: {e}", file=sys.stderr)
+        return None
 
-        msg = response.choices[0].message
-        messages.append(msg)
+    validated = _validate_summary_payload(payload)
+    if validated is None:
+        print(f"  [summarize] invalid payload for {article['url']}: {payload}", file=sys.stderr)
+        return None
 
-        if not msg.tool_calls:
-            return msg.content or "Agent produced no output."
+    return {"title": article["title"], "url": article["url"], **validated}
 
-        for tc in msg.tool_calls:
-            args = json.loads(tc.function.arguments)
-            print(f"  [tool] {tc.function.name}({json.dumps(args)})", file=sys.stderr)
-            result = dispatch_tool(tc.function.name, args)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "content": json.dumps(result),
-            })
 
-    return "Agent reached the iteration limit without producing a final summary."
+def summarize_articles(articles: list[dict]) -> list[dict]:
+    summaries = []
+    for article in articles:
+        summary = summarize_article(article)
+        if summary:
+            summaries.append(summary)
+    return summaries
+
+
+def render_digest(summaries: list[dict]) -> str | None:
+    """Deterministically render validated per-article summaries into the Markdown digest.
+
+    Returns None if there is nothing to render.
+    """
+    if not summaries:
+        return None
+
+    sections = []
+    for category in CATEGORIES:
+        items = [s for s in summaries if s["category"] == category]
+        if not items:
+            continue
+        lines = [f"## {category}", ""]
+        lines.extend(f"- **[{item['title']}]({item['url']})** — {item['summary']}" for item in items)
+        sections.append("\n".join(lines))
+
+    sources_lines = ["## Sources", ""]
+    sources_lines.extend(f"- [{item['title']}]({item['url']})" for item in summaries)
+    sections.append("\n".join(sources_lines))
+
+    return "\n\n".join(sections)
 
 
 def issue_already_exists_today(today: str) -> bool:
@@ -307,47 +332,34 @@ def create_github_issue(title: str, body: str) -> str:
     raise RuntimeError(f"Failed to create issue: {resp.status_code} {resp.text}")
 
 
-NO_NEWS_MARKERS = [
-    "no relevant", "no significant", "no eu ai act news",
-    "nothing to report", "no news found", "no articles found",
-]
-
-
-def prescan_feeds() -> int:
-    """Scan all RSS feeds without calling the LLM. Returns total relevant article count."""
-    total = 0
-    for feed in RSS_FEEDS:
-        result = fetch_rss_articles(feed["name"], feed["url"], days_back=1)
-        count = len(result.get("relevant_articles", []))
-        if count:
-            print(f"  [prescan] {feed['name']}: {count} relevant article(s)", file=sys.stderr)
-        total += count
-    return total
-
-
 def main():
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
     print(f"Starting EU AI Act news agent for {today}", file=sys.stderr)
 
     if issue_already_exists_today(today):
         print(f"Digest for {today} already exists — skipping.", file=sys.stderr)
         sys.exit(0)
 
-    relevant_count = prescan_feeds()
-    if relevant_count == 0:
+    articles = collect_relevant_articles()
+    if not articles:
         print(f"No relevant EU AI Act articles found for {today} — skipping issue.", file=sys.stderr)
         sys.exit(0)
 
-    print(f"Found {relevant_count} relevant article(s) — running agent.", file=sys.stderr)
-    summary = run_agent(today)
+    print(f"Found {len(articles)} relevant article(s) — summarizing.", file=sys.stderr)
+    summaries = summarize_articles(articles)
 
-    if any(marker in summary.lower() for marker in NO_NEWS_MARKERS):
-        print(f"Agent found no significant news for {today} — skipping issue.", file=sys.stderr)
+    digest = render_digest(summaries)
+    if digest is None:
+        print(f"No summaries could be produced for {today} — skipping issue.", file=sys.stderr)
         sys.exit(0)
+
+    skipped = len(articles) - len(summaries)
+    if skipped:
+        print(f"{skipped} article(s) could not be summarized and were excluded.", file=sys.stderr)
 
     issue_title = f"EU AI Act News Digest — {today}"
     issue_body = (
-        f"{summary}\n\n"
+        f"{digest}\n\n"
         f"---\n"
         f"*Automated daily digest. Sources: {', '.join(f['name'] for f in RSS_FEEDS)}. "
         f"Powered by DeepSeek AI via the EU AI Act News Agent.*"

@@ -4,59 +4,40 @@ on:
   issue_comment:
     types: [created]
 
+# Nothing by default; each job grants only what integration-tests-run.yml needs.
+permissions: {}
+
 jobs:
   integration:
     if: |
       github.event.issue.pull_request != null &&
       contains(github.event.comment.body, 'integration tests') &&
       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout PR branch
-        uses: actions/checkout@v7
-        with:
-          ref: refs/pull/${{ github.event.issue.number }}/head
-
-      - uses: astral-sh/setup-uv@v10.3.3
-        with:
-          cache-dependency-glob: calculator/uv.lock
-
-      - name: Install dependencies
-        working-directory: calculator
-        run: make install
-
-      - name: Run integration tests
-        working-directory: calculator
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        run: make integration_tests
+    permissions:
+      contents: read        # check out the PR
+      statuses: write       # commit status in the PR checks box
+      pull-requests: write  # result comment on the PR
+      issues: write         # reactions on the trigger comment
+    uses: ./.github/workflows/integration-tests-run.yml
+    with:
+      project: calculator
+      status-context: integration / calculator
+    secrets:
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
 
   eu-ai-act-integration:
     if: |
       github.event.issue.pull_request != null &&
       contains(github.event.comment.body, '/integration-test eu-ai-act-news') &&
       github.event.comment.user.login == github.repository_owner
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout PR branch
-        uses: actions/checkout@v7
-        with:
-          ref: refs/pull/${{ github.event.issue.number }}/head
-
-      - uses: astral-sh/setup-uv@v10.3.3
-        with:
-          cache-dependency-glob: eu_ai_act_news/uv.lock
-
-      - name: Install dependencies
-        working-directory: eu_ai_act_news
-        run: make install
-
-      - name: Run integration tests
-        working-directory: eu_ai_act_news
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: make integration_tests
+    permissions:
+      contents: read
+      statuses: write
+      pull-requests: write
+      issues: write
+    uses: ./.github/workflows/integration-tests-run.yml
+    with:
+      project: eu_ai_act_news
+      status-context: integration / eu-ai-act-news
+    secrets:
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}

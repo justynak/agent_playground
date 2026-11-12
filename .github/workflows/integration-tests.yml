@@ -1,43 +1,135 @@
 name: Integration Tests
 
+# Run live integration tests on a PR by commenting a command that STARTS the comment:
+#
+#   /integration-test                    every project you're allowed to run
+#   /integration-test calculator         one project
+#   /integration-test calculator eu-ai-act-news
+#
+# Projects, and who may trigger each, are listed in PROJECTS in the `parse` job below.
+# Adding a project is one entry there; the jobs don't change.
+# Results come back to the PR: 👀 / 🚀 / 👎 reactions on the command, one
+# `integration / <project>` check, and one result comment per project.
+
 on:
   issue_comment:
     types: [created]
 
-# Nothing by default; each job grants only what integration-tests-run.yml needs.
+# Nothing by default; each job grants only what it needs.
 permissions: {}
 
 jobs:
-  integration:
+  parse:
+    # Cheap pre-filter. People outside the repo never even get a runner, so they can't
+    # make the workflow post replies. Per-project permissions are checked in the step.
     if: |
       github.event.issue.pull_request != null &&
-      contains(github.event.comment.body, 'integration tests') &&
+      startsWith(github.event.comment.body, '/integration-test') &&
       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write         # reaction on the command
+      pull-requests: write  # usage / not-allowed reply
+    outputs:
+      projects: ${{ steps.parse.outputs.projects }}
+      dirs: ${{ steps.parse.outputs.dirs }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.issue.number }}
+      COMMENT_ID: ${{ github.event.comment.id }}
+    steps:
+      - name: Parse command
+        id: parse
+        shell: python
+        env:
+          # The comment body is untrusted: it's only ever read from env, never put in a script.
+          BODY: ${{ github.event.comment.body }}
+          IS_OWNER: ${{ github.event.comment.user.login == github.repository_owner }}
+        run: |
+          import json, os
+
+          # who: "collaborators" = owner, org members and collaborators; "owner" = repo owner only.
+          PROJECTS = {
+              "calculator":     {"dir": "calculator",     "who": "collaborators"},
+              "eu-ai-act-news": {"dir": "eu_ai_act_news", "who": "owner"},
+          }
+
+          is_owner = os.environ["IS_OWNER"] == "true"
+          def allowed(name):
+              return is_owner or PROJECTS[name]["who"] == "collaborators"
+
+          words = os.environ["BODY"].splitlines()[0].split()
+          command, requested = words[0], words[1:]
+          usage = (
+              "Usage: `/integration-test [project ...]`, or no project for all you're allowed to run.\n"
+              "Projects: " + ", ".join(f"`{p}`" for p in PROJECTS)
+          )
+          error = None
+          if command != "/integration-test":            # e.g. "/integration-tests"
+              error = f"Unknown command `{command}`.\n\n{usage}"
+          elif unknown := [p for p in requested if p not in PROJECTS]:
+              error = "Unknown project: " + ", ".join(f"`{p}`" for p in unknown) + f"\n\n{usage}"
+          elif denied := [p for p in requested if not allowed(p)]:
+              error = "Only the repository owner can run: " + ", ".join(f"`{p}`" for p in denied)
+
+          selected = [] if error else [p for p in (requested or PROJECTS) if allowed(p)]
+          selected = list(dict.fromkeys(selected))      # drop duplicates, keep order
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"projects={json.dumps(selected)}\n")
+              out.write(f"dirs={json.dumps({p: PROJECTS[p]['dir'] for p in selected})}\n")
+          if error:
+              with open(os.path.join(os.environ["RUNNER_TEMP"], "reply.md"), "w") as f:
+                  f.write(f"😕 {error}\n")
+          print("selected:", selected, "| error:", error)
+
+      - name: Acknowledge command
+        env:
+          PROJECTS: ${{ steps.parse.outputs.projects }}
+        run: |
+          if [ "$PROJECTS" = "[]" ]; then reaction=confused; else reaction=eyes; fi
+          gh api -X POST "repos/$REPO/issues/comments/$COMMENT_ID/reactions" -f content="$reaction" --silent
+          if [ -f "$RUNNER_TEMP/reply.md" ]; then
+            gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$RUNNER_TEMP/reply.md"
+          fi
+
+  test:
+    needs: parse
+    if: needs.parse.outputs.projects != '[]'
+    strategy:
+      fail-fast: false   # one project failing must not cancel the others
+      matrix:
+        project: ${{ fromJSON(needs.parse.outputs.projects) }}
     permissions:
       contents: read        # check out the PR
       statuses: write       # commit status in the PR checks box
       pull-requests: write  # result comment on the PR
-      issues: write         # reactions on the trigger comment
-    uses: ./.github/workflows/integration-tests-run.yml
+    uses: ./.github/workflows/integration-tests-run-and-report.yml
     with:
-      project: calculator
-      status-context: integration / calculator
+      project: ${{ fromJSON(needs.parse.outputs.dirs)[matrix.project] }}
+      status-context: integration / ${{ matrix.project }}
     secrets:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
 
-  eu-ai-act-integration:
-    if: |
-      github.event.issue.pull_request != null &&
-      contains(github.event.comment.body, '/integration-test eu-ai-act-news') &&
-      github.event.comment.user.login == github.repository_owner
+  report:
+    needs: [parse, test]
+    # Runs after every project has finished, pass or fail; skipped if nothing was selected.
+    if: always() && needs.parse.result == 'success' && needs.parse.outputs.projects != '[]'
+    runs-on: ubuntu-latest
     permissions:
-      contents: read
-      statuses: write
-      pull-requests: write
-      issues: write
-    uses: ./.github/workflows/integration-tests-run.yml
-    with:
-      project: eu_ai_act_news
-      status-context: integration / eu-ai-act-news
-    secrets:
-      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      issues: write   # final reaction on the command
+    steps:
+      - name: Final reaction on command
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          RESULT: ${{ needs.test.result }}
+        run: |
+          case "$RESULT" in
+            success)   reaction=rocket ;;
+            cancelled) reaction=confused ;;
+            *)         reaction=-1 ;;
+          esac
+          gh api -X POST "repos/$REPO/issues/comments/$COMMENT_ID/reactions" -f content="$reaction" --silent

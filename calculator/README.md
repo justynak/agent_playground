@@ -108,3 +108,17 @@ make test
 ```
 
 Tests cover all pure-Python tools and the orchestrator's bail-on-consecutive-errors logic (LLM calls are mocked).
+
+### Integration tests
+
+`make integration_tests` runs the tests marked `integration` against the live DeepSeek API
+(needs `DEEPSEEK_API_KEY`, e.g. in a local `.env`). They don't run in regular CI. To run them
+on a PR, comment:
+
+```
+/integration-test calculator
+```
+
+Owners, org members and collaborators can trigger it. The result shows on the PR as the
+`integration / calculator` check plus a result comment. `/integration-test` on its own runs
+every project you're allowed to run.

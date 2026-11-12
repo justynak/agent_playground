@@ -43,6 +43,21 @@ The agent uses an allowlisted set of domains to prevent prompt injection via fet
 
 The workflow runs daily at 8:00 AM UTC. You can also trigger it manually from the Actions tab.
 
+## Integration tests
+
+`make integration_tests` runs the tests marked `integration` against live feeds and the
+DeepSeek API (needs `DEEPSEEK_API_KEY`, e.g. in a local `.env`). These are the end-to-end
+pipeline test and the labelled relevance eval set in `tests/test_relevance_eval.py`. They
+don't run in regular CI. To run them on a PR, comment:
+
+```
+/integration-test eu-ai-act-news
+```
+
+Only the repository owner can trigger it. The result shows on the PR as the
+`integration / eu-ai-act-news` check plus a result comment. `/integration-test` on its own
+runs every project you're allowed to run.
+
 ## Tech stack
 
 - **Agent framework**: OpenAI-compatible tool calling (DeepSeek `deepseek-chat`)

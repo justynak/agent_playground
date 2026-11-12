@@ -1,10 +1,10 @@
-name: Integration Tests (run)
+name: Integration Tests (run and report)
 
-# Reusable workflow called by integration-tests.yml for each project. Runs one project's
+# Reusable workflow called by integration-tests.yml once per project. Runs one project's
 # integration tests against a PR's head commit and reports the result back to the PR:
-#   - 👀 reaction on the trigger comment when the run starts, then 🚀 / 👎 when it ends
 #   - a commit status on the tested commit (shows in the PR checks box, can be required)
 #   - a comment with the outcome, the pytest summary line and a link to the run
+# Reactions on the trigger comment are handled once per command by the caller.
 #
 # `issue_comment` runs are not tied to a PR commit, so none of this happens by default.
 # Called only from the default branch (where `issue_comment` workflows are loaded from), so
@@ -37,15 +37,11 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.issue.number }}
-      COMMENT_ID: ${{ github.event.comment.id }}
       STATUS_CONTEXT: ${{ inputs.status-context }}
       PROJECT: ${{ inputs.project }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
     steps:
-      - name: Acknowledge trigger comment
-        run: gh api -X POST "repos/$REPO/issues/comments/$COMMENT_ID/reactions" -f content=eyes --silent
-
       # Resolve the head SHA once and use it for both the checkout and the status, so a push
       # landing mid-run can't make us test one commit and report on another.
       - name: Resolve PR head commit
@@ -92,9 +88,9 @@ jobs:
           JOB_STATUS: ${{ job.status }}
         run: |
           case "$JOB_STATUS" in
-            success)   state=success; icon="✅"; word=passed;    reaction=rocket ;;
-            cancelled) state=error;   icon="⚪"; word=cancelled; reaction=confused ;;
-            *)         state=failure; icon="❌"; word=failed;    reaction=-1 ;;
+            success)   state=success; icon="✅"; word=passed ;;
+            cancelled) state=error;   icon="⚪"; word=cancelled ;;
+            *)         state=failure; icon="❌"; word=failed ;;
           esac
 
           gh api -X POST "repos/$REPO/statuses/$SHA" --silent \
@@ -116,5 +112,3 @@ jobs:
             echo "[View run]($RUN_URL)"
           } > "$RUNNER_TEMP/comment.md"
           gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$RUNNER_TEMP/comment.md"
-
-          gh api -X POST "repos/$REPO/issues/comments/$COMMENT_ID/reactions" -f content="$reaction" --silent

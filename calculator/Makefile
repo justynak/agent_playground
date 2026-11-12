@@ -1,6 +1,10 @@
 .PHONY: install
 install:
-	uv sync --group dev
+	uv sync --locked --group dev
+
+.PHONY: lock
+lock:
+	uv lock
 
 .PHONY: lint
 lint:

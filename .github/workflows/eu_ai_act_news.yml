@@ -20,6 +20,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: astral-sh/setup-uv@v5
+        with:
+          cache-dependency-glob: eu_ai_act_news/uv.lock
 
       - name: Install dependencies
         run: make install

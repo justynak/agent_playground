@@ -19,6 +19,8 @@ jobs:
           ref: refs/pull/${{ github.event.issue.number }}/head
 
       - uses: astral-sh/setup-uv@v5
+        with:
+          cache-dependency-glob: calculator/uv.lock
 
       - name: Install dependencies
         working-directory: calculator
@@ -44,6 +46,8 @@ jobs:
           ref: refs/pull/${{ github.event.issue.number }}/head
 
       - uses: astral-sh/setup-uv@v5
+        with:
+          cache-dependency-glob: eu_ai_act_news/uv.lock
 
       - name: Install dependencies
         working-directory: eu_ai_act_news

@@ -159,7 +159,6 @@ venv.bak/
 bin/
 lib64
 pyvenv.cfg
-uv.lock
 
 # Spyder project settings
 .spyderproject

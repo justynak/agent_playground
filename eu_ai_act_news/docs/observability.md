@@ -18,8 +18,9 @@ so a single trace shows the whole run's decision path:
 - `collection.collect_relevant_articles` → `collection.fetch_feed` (per RSS feed: article
   counts, parse errors)
 - `summarization.summarize_article` (per article: fetch outcome, generate/verify attempts
-  as span events, final accept/reject decision and why) → `summarization.generate` /
-  `summarization.verify` (the two DeepSeek calls) → `fetching.fetch_article_content`
+  as span events, final accept/reject decision and why) → `summarization.assess_relevance`
+  (relevance grade and the model's reasoning) / `summarization.generate` /
+  `summarization.verify` (the three DeepSeek calls) → `fetching.fetch_article_content`
 - `publishing.issue_already_exists_today`, `publishing.create_github_issue`
 
 Span attributes carry the *why*: rejection reasons, unsupported claims from the verifier,

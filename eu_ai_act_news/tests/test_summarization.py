@@ -1,6 +1,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from news_agent import config, summarization
 
 
@@ -158,7 +160,116 @@ class TestVerifySummary:
         assert "cut off" in user_message
 
 
+class TestValidateRelevancePayload:
+    @pytest.mark.parametrize("grade", config.RELEVANCE_LEVELS)
+    def test_accepts_every_known_grade(self, grade):
+        payload = {"reasoning": "  Because.  ", "relevance": grade}
+        assert summarization.validate_relevance_payload(payload) == {"relevance": grade, "reasoning": "Because."}
+
+    def test_rejects_unknown_grade(self):
+        assert summarization.validate_relevance_payload({"reasoning": "x", "relevance": "high"}) is None
+
+    def test_rejects_missing_grade(self):
+        assert summarization.validate_relevance_payload({"reasoning": "x"}) is None
+
+    def test_missing_reasoning_does_not_invalidate_grade(self):
+        assert summarization.validate_relevance_payload({"relevance": "none"}) == {"relevance": "none", "reasoning": ""}
+
+
+RELEVANCE_ARTICLE = {"title": "European AI stocks tumble", "url": "https://example.com/a"}
+
+
+class TestAssessRelevance:
+
+    def test_returns_validated_grade(self):
+        response = _llm_response_with_arguments({"reasoning": "Market news.", "relevance": "none"})
+        with patch("news_agent.summarization.client") as mock_client:
+            mock_client.chat.completions.create.return_value = response
+            result = summarization.assess_relevance(RELEVANCE_ARTICLE, "full text")
+        assert result == {"relevance": "none", "reasoning": "Market news."}
+
+    def test_forces_record_relevance_tool_at_temperature_zero(self):
+        response = _llm_response_with_arguments({"reasoning": "x", "relevance": "primary"})
+        with patch("news_agent.summarization.client") as mock_client:
+            mock_client.chat.completions.create.return_value = response
+            summarization.assess_relevance(RELEVANCE_ARTICLE, "full text")
+        _, kwargs = mock_client.chat.completions.create.call_args
+        assert kwargs["tool_choice"]["function"]["name"] == "record_relevance"
+        assert kwargs["temperature"] == 0
+
+    def test_article_text_is_delimited_as_data(self):
+        response = _llm_response_with_arguments({"reasoning": "x", "relevance": "primary"})
+        with patch("news_agent.summarization.client") as mock_client:
+            mock_client.chat.completions.create.return_value = response
+            summarization.assess_relevance(RELEVANCE_ARTICLE, "full text")
+        _, kwargs = mock_client.chat.completions.create.call_args
+        assert "<article>\nfull text\n</article>" in kwargs["messages"][1]["content"]
+
+    def test_truncation_notice_only_when_truncated(self):
+        response = _llm_response_with_arguments({"reasoning": "x", "relevance": "primary"})
+        with patch("news_agent.summarization.client") as mock_client:
+            mock_client.chat.completions.create.return_value = response
+            summarization.assess_relevance(RELEVANCE_ARTICLE, "full text")
+            assert "cut off" not in mock_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+            summarization.assess_relevance(RELEVANCE_ARTICLE, "full text", truncated=True)
+            assert "cut off" in mock_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+
+    def test_returns_none_on_invalid_grade(self):
+        response = _llm_response_with_arguments({"reasoning": "x", "relevance": "maybe"})
+        with patch("news_agent.summarization.client") as mock_client:
+            mock_client.chat.completions.create.return_value = response
+            assert summarization.assess_relevance(RELEVANCE_ARTICLE, "full text") is None
+
+    def test_returns_none_on_api_error(self):
+        with patch("news_agent.summarization.client") as mock_client:
+            mock_client.chat.completions.create.side_effect = RuntimeError("API down")
+            assert summarization.assess_relevance(RELEVANCE_ARTICLE, "full text") is None
+
+
+GATE_ARTICLE = {"title": "T", "url": "https://example.com/a"}
+GATE_FETCHED = {"content": "full text", "url": "https://example.com/a"}
+GATE_GENERATED = {"category": config.CATEGORIES[0], "summary": "A summary."}
+
+
+class TestRelevanceGate:
+
+    @pytest.mark.parametrize("grade", sorted(config.ACCEPTED_RELEVANCE))
+    def test_accepted_grades_proceed_to_summarization(self, grade):
+        with patch("news_agent.summarization.fetch_article_content", return_value=GATE_FETCHED), \
+                patch("news_agent.summarization.assess_relevance", return_value={"relevance": grade, "reasoning": ""}), \
+                patch("news_agent.summarization.generate_summary_payload", return_value=GATE_GENERATED), \
+                patch("news_agent.summarization.verify_summary", return_value={"faithful": True, "unsupported_claims": []}):
+            assert summarization.summarize_article(GATE_ARTICLE) is not None
+
+    @pytest.mark.parametrize("grade", sorted(set(config.RELEVANCE_LEVELS) - config.ACCEPTED_RELEVANCE))
+    def test_rejected_grades_skip_without_summarizing(self, grade):
+        with patch("news_agent.summarization.fetch_article_content", return_value=GATE_FETCHED), \
+                patch("news_agent.summarization.assess_relevance", return_value={"relevance": grade, "reasoning": ""}), \
+                patch("news_agent.summarization.generate_summary_payload") as mock_generate:
+            assert summarization.summarize_article(GATE_ARTICLE) is None
+        mock_generate.assert_not_called()
+
+    def test_failed_relevance_check_fails_closed(self):
+        with patch("news_agent.summarization.fetch_article_content", return_value=GATE_FETCHED), \
+                patch("news_agent.summarization.assess_relevance", return_value=None), \
+                patch("news_agent.summarization.generate_summary_payload") as mock_generate:
+            assert summarization.summarize_article(GATE_ARTICLE) is None
+        mock_generate.assert_not_called()
+
+    def test_truncation_flag_is_passed_to_relevance_check(self):
+        with patch("news_agent.summarization.fetch_article_content", return_value={**GATE_FETCHED, "truncated": True}), \
+                patch("news_agent.summarization.assess_relevance", return_value=None) as mock_relevance:
+            summarization.summarize_article(GATE_ARTICLE)
+        assert mock_relevance.call_args.kwargs["truncated"] is True
+
+
 class TestSummarizeArticle:
+    @pytest.fixture(autouse=True)
+    def _relevant(self):
+        """These tests cover the summarize/verify loop, so every article passes the relevance gate."""
+        with patch("news_agent.summarization.assess_relevance", return_value={"relevance": "primary", "reasoning": ""}):
+            yield
+
     def test_skips_article_when_content_fetch_fails(self):
         article = {"title": "T", "url": "https://example.com/a"}
         with patch("news_agent.summarization.fetch_article_content", return_value={"error": "boom"}):

@@ -1,0 +1,30 @@
+version: 2
+updates:
+  # Keeps the actions used in .github/workflows/ current, so runtime deprecations
+  # (e.g. the Node 20 -> Node 24 move) arrive as a PR instead of a CI warning.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # One PR for all action bumps instead of one per action.
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+
+  # Python dependencies: updates pyproject.toml and uv.lock in each project.
+  - package-ecosystem: uv
+    directories:
+      - /calculator
+      - /eu_ai_act_news
+    schedule:
+      interval: weekly
+    # Minor/patch bumps are batched into one PR per project; major bumps stay as
+    # separate PRs since they are the ones likely to need code changes.
+    groups:
+      python-minor-and-patch:
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: deps
+    open-pull-requests-limit: 5

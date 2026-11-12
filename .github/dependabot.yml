@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # Keeps the actions used in .github/workflows/ current, so runtime deprecations
+  # (e.g. the Node 20 -> Node 24 move) arrive as a PR instead of a CI warning.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # One PR for all action bumps instead of one per action.
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci

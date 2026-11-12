@@ -1,0 +1,114 @@
+name: Integration Tests (run and report)
+
+# Reusable workflow called by integration-tests.yml once per project. Runs one project's
+# integration tests against a PR's head commit and reports the result back to the PR:
+#   - a commit status on the tested commit (shows in the PR checks box, can be required)
+#   - a comment with the outcome, the pytest summary line and a link to the run
+# Reactions on the trigger comment are handled once per command by the caller.
+#
+# `issue_comment` runs are not tied to a PR commit, so none of this happens by default.
+# Called only from the default branch (where `issue_comment` workflows are loaded from), so
+# this file is never taken from the PR under test.
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: Project directory to test (e.g. calculator).
+        required: true
+        type: string
+      status-context:
+        description: Name of the commit status shown in the PR checks box.
+        required: true
+        type: string
+    secrets:
+      DEEPSEEK_API_KEY:
+        required: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    # A second trigger comment on the same PR+project supersedes an in-flight run, so two
+    # runs can't race to set the same commit status.
+    concurrency:
+      group: integration-${{ inputs.project }}-pr-${{ github.event.issue.number }}
+      cancel-in-progress: true
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.issue.number }}
+      STATUS_CONTEXT: ${{ inputs.status-context }}
+      PROJECT: ${{ inputs.project }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+    steps:
+      # Resolve the head SHA once and use it for both the checkout and the status, so a push
+      # landing mid-run can't make us test one commit and report on another.
+      - name: Resolve PR head commit
+        id: pr
+        run: echo "sha=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha)" >> "$GITHUB_OUTPUT"
+
+      - name: Mark commit status pending
+        env:
+          SHA: ${{ steps.pr.outputs.sha }}
+        run: >
+          gh api -X POST "repos/$REPO/statuses/$SHA" --silent
+          -f state=pending -f context="$STATUS_CONTEXT"
+          -f description="Running integration tests" -f target_url="$RUN_URL"
+
+      - name: Checkout PR head commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.pr.outputs.sha }}
+          # The PR's code runs next with secrets in env; don't also leave the token in .git/config.
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          cache-dependency-glob: ${{ inputs.project }}/uv.lock
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.project }}
+        run: make install
+
+      - name: Run integration tests
+        working-directory: ${{ inputs.project }}
+        # Explicit `shell: bash` runs with `-o pipefail`, so `tee` doesn't mask a pytest failure.
+        shell: bash
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: make integration_tests 2>&1 | tee "$RUNNER_TEMP/pytest-output.txt"
+
+      - name: Report result to PR
+        if: always() && steps.pr.outputs.sha != ''
+        env:
+          SHA: ${{ steps.pr.outputs.sha }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          case "$JOB_STATUS" in
+            success)   state=success; icon="✅"; word=passed ;;
+            cancelled) state=error;   icon="⚪"; word=cancelled ;;
+            *)         state=failure; icon="❌"; word=failed ;;
+          esac
+
+          gh api -X POST "repos/$REPO/statuses/$SHA" --silent \
+            -f state="$state" -f context="$STATUS_CONTEXT" \
+            -f description="Integration tests $word" -f target_url="$RUN_URL"
+
+          # Last pytest summary line, e.g. "==== 8 passed in 41.2s ====". Empty if pytest
+          # never ran (install failed). It comes from PR code, so it goes in via a file,
+          # never interpolated into this script.
+          summary=$(grep -E '^=+ .*(passed|failed|error|skipped|deselected).* =+$' \
+                      "$RUNNER_TEMP/pytest-output.txt" 2>/dev/null | tail -n 1 | sed -E 's/^=+ | =+$//g')
+
+          {
+            echo "### $icon Integration tests $word: \`$PROJECT\`"
+            echo
+            echo "Commit: \`${SHA:0:7}\`"
+            if [ -n "$summary" ]; then echo; echo "\`\`\`"; echo "$summary"; echo "\`\`\`"; fi
+            echo
+            echo "[View run]($RUN_URL)"
+          } > "$RUNNER_TEMP/comment.md"
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$RUNNER_TEMP/comment.md"

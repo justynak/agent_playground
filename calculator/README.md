@@ -119,6 +119,6 @@ on a PR, comment:
 /integration-test calculator
 ```
 
-Owners, org members and collaborators can trigger it. The result shows on the PR as the
+Only the repository owner can trigger it. The result shows on the PR as the
 `integration / calculator` check plus a result comment. `/integration-test` on its own runs
 every project you're allowed to run.

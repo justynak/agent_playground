@@ -51,7 +51,7 @@ jobs:
 
           # who: "collaborators" = owner, org members and collaborators; "owner" = repo owner only.
           PROJECTS = {
-              "calculator":     {"dir": "calculator",     "who": "collaborators"},
+              "calculator":     {"dir": "calculator",     "who": "owner"},
               "eu-ai-act-news": {"dir": "eu_ai_act_news", "who": "owner"},
           }
 
@@ -72,6 +72,8 @@ jobs:
               error = "Unknown project: " + ", ".join(f"`{p}`" for p in unknown) + f"\n\n{usage}"
           elif denied := [p for p in requested if not allowed(p)]:
               error = "Only the repository owner can run: " + ", ".join(f"`{p}`" for p in denied)
+          elif not requested and not any(allowed(p) for p in PROJECTS):
+              error = "Only the repository owner can run integration tests here."
 
           selected = [] if error else [p for p in (requested or PROJECTS) if allowed(p)]
           selected = list(dict.fromkeys(selected))      # drop duplicates, keep order

@@ -14,3 +14,11 @@ from orchestrator import run
 def test_happy_path():
     result = run("(33*34)-50*2")
     assert "1022" in result
+
+
+# DO NOT MERGE: deliberately failing test to verify that integration-test results are
+# reported back to the PR (failed check, ❌ comment, 👎 reaction). Delete with the PR.
+@pytest.mark.integration
+def test_deliberately_failing_to_verify_pr_reporting():
+    result = run("2+2")
+    assert "5" in result, f"Deliberate failure: expected '5' in {result!r}"

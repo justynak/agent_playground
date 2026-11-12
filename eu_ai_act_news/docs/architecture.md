@@ -7,17 +7,19 @@ This document captures the **as-is** architecture of the agent as implemented in
 The agent is a **deterministic batch pipeline** (scheduled, single run) that:
 
 1. Collects candidate articles from a fixed set of RSS feeds.
-2. Filters by keyword heuristics.
+2. Filters by keyword heuristics (tuned for recall: broad terms like "European AI").
 3. Fetches and extracts full article text from allowlisted domains.
-4. Uses an LLM (DeepSeek `deepseek-chat`) with tool calling to produce a structured,
+4. Uses an LLM relevance gate on the full text to drop articles that are general AI news
+   rather than about the EU AI Act (the precision step behind the keyword filter).
+5. Uses an LLM (DeepSeek `deepseek-chat`) with tool calling to produce a structured,
    categorized summary per article.
-5. Uses a **second, independent** LLM call ("LLM-as-judge") to fact-check each summary
+6. Uses a **second, independent** LLM call ("LLM-as-judge") to fact-check each summary
    against the source text, retrying with feedback up to `MAX_SUMMARY_ATTEMPTS`.
-6. Deterministically renders a Markdown digest grouped by category.
-7. Publishes the digest as a GitHub Issue (idempotent per day).
+7. Deterministically renders a Markdown digest grouped by category.
+8. Publishes the digest as a GitHub Issue (idempotent per day).
 
 The control flow is driven by **Python code**, not by the LLM. The LLM is only invoked
-at two well-defined points (summarize, verify). This is a *pipeline with LLM steps*,
+at three well-defined points (relevance, summarize, verify). This is a *pipeline with LLM steps*,
 not an autonomous tool-using agent loop.
 
 ## Observability
@@ -25,7 +27,7 @@ not an autonomous tool-using agent loop.
 Every stage in the diagram below is also an OpenTelemetry span, nested under one root
 span per run (`news_agent.run`) — `telemetry.py` owns setup/shutdown, all other modules
 just acquire a tracer/logger/meter the standard OTel way. Span attributes carry the
-*why* behind each decision node (`RELEVANT`, `ALLOW`, `VALSUM`, `FAITHFUL`, `ATTEMPTS`,
+*why* behind each decision node (`RELEVANT`, `ALLOW`, `ONTOPIC`, `VALSUM`, `FAITHFUL`, `ATTEMPTS`,
 `ANYSUM`) — rejection reasons, unsupported claims, retry counts, categories chosen — and
 structured logs plus per-run metrics (articles processed by outcome, verification
 attempts by result, LLM call latency) are exported alongside the traces. This is a
@@ -64,6 +66,8 @@ flowchart TD
         ONE["summarize_article()"]
         FETCHTXT["fetch_article_content()<br/>requests + BeautifulSoup"]
         ALLOW{"is_allowed_domain()?"}
+        RELCHECK["assess_relevance()<br/>LLM tool call: record_relevance"]
+        ONTOPIC{"grade primary or substantive?"}
         GEN["generate_summary_payload()<br/>LLM tool call: record_summary"]
         VALSUM{"validate_summary_payload()?"}
         VERIFY["verify_summary()<br/>LLM tool call: record_verification"]
@@ -75,7 +79,9 @@ flowchart TD
 
         SUMMARIZE --> ONE --> FETCHTXT --> ALLOW
         ALLOW -- no --> REJECT
-        ALLOW -- yes --> GEN --> VALSUM
+        ALLOW -- yes --> RELCHECK --> ONTOPIC
+        ONTOPIC -- "no / call failed" --> REJECT
+        ONTOPIC -- yes --> GEN --> VALSUM
         VALSUM -- invalid --> ATTEMPTS
         VALSUM -- valid --> VERIFY --> FAITHFUL
         FAITHFUL -- yes --> ACCEPT
@@ -106,6 +112,7 @@ flowchart TD
 
     FETCHRSS -.-> RSS
     FETCHTXT -.-> NEWS
+    RELCHECK -.-> LLM
     GEN -.-> LLM
     VERIFY -.-> LLM
     ISSUE -.-> GH
@@ -125,6 +132,8 @@ sequenceDiagram
     M->>S: summarize_article(article)
     S->>W: fetch_article_content(url)
     W-->>S: text (max MAX_ARTICLE_CHARS chars)
+    S->>L: record_relevance (reasoning, relevance)
+    L-->>S: grade (passing/none or failure -> return None)
     loop up to MAX_SUMMARY_ATTEMPTS
         S->>L: record_summary (category, summary)
         alt parse/validate ok
@@ -153,6 +162,7 @@ sequenceDiagram
 | `is_relevant` | Keyword heuristic gate | — |
 | `is_allowed_domain` | SSRF / prompt-injection mitigation | Security control |
 | `fetch_article_content` | Scrape + extract main text | Untrusted (web) |
+| `assess_relevance` | LLM EU-AI-Act relevance gate on full text | LLM output validated |
 | `generate_summary_payload` | LLM summary, structured output | LLM output validated |
 | `verify_summary` | LLM fact-check of summary | LLM output validated |
 | `summarize_article` | Retry/feedback loop + accept/reject policy | — |
@@ -164,10 +174,11 @@ sequenceDiagram
 
 - **Deterministic orchestration**: Python owns all control flow; the model is called at
   fixed steps. There is no agent-driven tool selection or planning loop.
-- **Structured outputs**: Both LLM calls force a single named tool (`tool_choice`), and
+- **Structured outputs**: All three LLM calls force a single named tool (`tool_choice`), and
   every payload is validated before use.
 - **Fail-closed verification**: A summary is published only if it passes the judge;
-  judge-call failure is treated as "not faithful".
+  judge-call failure is treated as "not faithful". The relevance gate fails closed the
+  same way: a failed relevance call drops the article.
 - **Graceful degradation**: Feed/article/LLM failures are logged and skipped; one bad
   item never aborts the run.
 - **Idempotency**: One digest per day, guarded by an open-issue title check.

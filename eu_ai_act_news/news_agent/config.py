@@ -110,6 +110,45 @@ VERIFY_TOOL = {
     },
 }
 
+# Graded rather than boolean: a yes/no gate pushes borderline "mentions the AI Act once"
+# articles to whichever side the model leans that day, while an explicit "passing" grade
+# gives those a named bucket to land in. Only grades in ACCEPTED_RELEVANCE are published.
+RELEVANCE_LEVELS = ["primary", "substantive", "passing", "none"]
+ACCEPTED_RELEVANCE = {"primary", "substantive"}
+
+RELEVANCE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "record_relevance",
+        "description": "Records how relevant one news article is to the EU AI Act specifically.",
+        "parameters": {
+            "type": "object",
+            # `reasoning` is listed first so the model writes its justification before
+            # committing to a grade, rather than rationalising a grade it already picked.
+            "properties": {
+                "reasoning": {
+                    "type": "string",
+                    "description": (
+                        "1-2 sentences: what the article is mainly about, and how (if at all) "
+                        "it involves the EU AI Act."
+                    ),
+                },
+                "relevance": {
+                    "type": "string",
+                    "enum": RELEVANCE_LEVELS,
+                    "description": (
+                        "primary: the EU AI Act is the main subject. "
+                        "substantive: a significant part of the article discusses the EU AI Act. "
+                        "passing: the EU AI Act is only name-dropped or mentioned in a sentence or two. "
+                        "none: the article does not involve the EU AI Act."
+                    ),
+                },
+            },
+            "required": ["reasoning", "relevance"],
+        },
+    },
+}
+
 MAX_SUMMARY_ATTEMPTS = 3
 
 # Cap on how much article text we feed the model. Raised from the original 4000 so

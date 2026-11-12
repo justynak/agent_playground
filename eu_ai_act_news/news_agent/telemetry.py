@@ -71,7 +71,7 @@ verification_attempts_total = _meter.create_counter(
 llm_call_duration_seconds = _meter.create_histogram(
     "news_agent.llm.call.duration",
     unit="s",
-    description="DeepSeek chat completion latency, labeled by call type (generate/verify).",
+    description="DeepSeek chat completion latency, labeled by call type (relevance/generate/verify).",
 )
 digests_published_total = _meter.create_counter(
     "news_agent.digests.published",

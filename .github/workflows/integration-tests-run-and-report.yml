@@ -63,7 +63,7 @@ jobs:
           # The PR's code runs next with secrets in env; don't also leave the token in .git/config.
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: astral-sh/setup-uv@v10.4.0
         with:
           cache-dependency-glob: ${{ inputs.project }}/uv.lock
 
